@@ -28,8 +28,6 @@ When teaching live, you need instant responsiveness, zero latency, reliable palm
 ### 🖊️ Screen-Sharing & Teaching Tools
 - **Pressure-Sensitive Stylus Inking**: Ultra-low-latency ink with smooth tapering powered by `perfect-freehand`.
 - **Laser Pointer**: Cast live glowing pointer trails that automatically fade over time to guide student attention during screen sharing.
-- **Velocity-Adaptive Partial Eraser**: Inspired by classic Windows Whiteboard—the eraser circle expands smoothly with stroke speed and sustained contact, cleanly carving away only the intersecting segments of strokes, text, and drawings.
-- **Dedicated Eraser Scale Selector**: Click the active eraser (or right-click) to choose between quick preset sizes or a free scale slider.
 - **Interactive Ruler & Protractor**: On-screen hardware ruler with 1° / 5° precision angle adjustment via mouse wheel or two-finger touch, featuring automatic line snapping along the edge.
 
 ### 📄 Frame-Based Organization & PDF Export
@@ -46,7 +44,6 @@ When teaching live, you need instant responsiveness, zero latency, reliable palm
 ### 🔄 Manipulation & Selection
 - **Anchor-Point Rotation**: Rotate any object, text, or multi-selection around an explicit pivot anchor (`⨁`) without unwanted warping or accidental scaling.
 - **Quick Lasso Selection**: Click the Select tool or use the stylus barrel button / right-click to circle items with a freehand lasso loop.
-- **Seamless Drawing Transition**: Clicking anywhere outside an active selection immediately clears the highlight, returns to pen mode with your last-used color, and begins drawing right away.
 - **Floating Actions**: Quick floating toolbar for Delete, Duplicate (`Ctrl+D`), Lock (`Ctrl+L`), and Text formatting.
 
 ### 💾 Safe Sessions & Zero Data Loss
