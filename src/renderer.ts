@@ -1,0 +1,566 @@
+import type { Assets } from './assets';
+import type { EraserState } from './eraser';
+import type { BBox } from './geom';
+import { strokeGeometry } from './ink';
+import type { Minimap } from './minimap';
+import {
+  arrowWings, bboxOf, frameLabelBox, handlePositions, ROT_HANDLE_OFFSET, selectionFrame, shapeArrows, shapeDash,
+} from './objects';
+import type { RadialMenu } from './radial_menu';
+import type { Ruler } from './ruler';
+import { FONTS, layoutText } from './textlayout';
+import type { BoardSettings, Box, Camera, FrameObj, ImageObj, Obj, PdfPageObj, ShapeObj, StickyObj, StrokeObj, TextObj } from './types';
+import { PT } from './types';
+
+export interface LaserPoint {
+  x: number;
+  y: number;
+  time: number;
+  color: string;
+}
+
+export class Renderer {
+  laserPoints: LaserPoint[] = [];
+
+  addLaser(x: number, y: number, color = '#ff1744') {
+    this.laserPoints.push({ x, y, time: performance.now(), color });
+  }
+
+  pruneLaser() {
+    const now = performance.now();
+    this.laserPoints = this.laserPoints.filter((p) => now - p.time < 1200);
+  }
+
+  render(
+    ctx: CanvasRenderingContext2D,
+    camera: Camera,
+    objects: Obj[],
+    selectedIds: Set<string>,
+    settings: BoardSettings,
+    assets: Assets,
+    ruler: Ruler,
+    radial: RadialMenu,
+    minimap: Minimap,
+    activeDraft?: Obj | null,
+    lassoPoly?: number[] | null,
+    eraserState?: EraserState | null,
+    activeSelectionBox?: Box | null,
+  ) {
+    const w = ctx.canvas.width;
+    const h = ctx.canvas.height;
+
+    ctx.save();
+    ctx.clearRect(0, 0, w, h);
+
+    // 1. Background
+    this.renderBackground(ctx, camera, settings, w, h);
+
+    // 2. Camera Transform for World Objects
+    ctx.save();
+    ctx.translate(camera.x, camera.y);
+    ctx.scale(camera.zoom, camera.zoom);
+
+    // Visible viewport in world coordinates
+    const vLeft = -camera.x / camera.zoom;
+    const vTop = -camera.y / camera.zoom;
+    const vRight = (w - camera.x) / camera.zoom;
+    const vBottom = (h - camera.y) / camera.zoom;
+    const viewBBox: BBox = [vLeft - 50, vTop - 50, vRight + 50, vBottom + 50];
+
+    // Partition objects into layers for clean rendering
+    const frames: FrameObj[] = [];
+    const pdfPages: PdfPageObj[] = [];
+    const images: ImageObj[] = [];
+    const highlighters: StrokeObj[] = [];
+    const others: Obj[] = [];
+
+    for (const o of objects) {
+      if (o.type === 'frame') frames.push(o);
+      else if (o.type === 'pdfpage') pdfPages.push(o);
+      else if (o.type === 'image') images.push(o);
+      else if (o.type === 'stroke' && o.highlighter) highlighters.push(o);
+      else others.push(o);
+    }
+
+    // 2a. Frames (background page containers)
+    for (const f of frames) this.renderFrame(ctx, f, camera.zoom, settings.dark);
+
+    // 2b. PDF Pages
+    for (const p of pdfPages) this.renderPdfPage(ctx, p, assets, camera.zoom);
+
+    // 2c. Images
+    for (const im of images) this.renderImage(ctx, im, assets);
+
+    // 2d. Highlighters (drawn under normal ink with opacity)
+    ctx.save();
+    ctx.globalAlpha = 0.42;
+    for (const hl of highlighters) this.renderStroke(ctx, hl);
+    ctx.restore();
+
+    // 2e. Regular Ink & Objects (shapes, stickies, text, normal ink)
+    for (const o of others) {
+      this.renderObject(ctx, o, assets, camera.zoom);
+    }
+
+    // 2f. Active interactive draft (in-progress stroke, shape, or frame)
+    if (activeDraft) {
+      if (activeDraft.type === 'frame') {
+        this.renderFrame(ctx, activeDraft, camera.zoom, settings.dark, true);
+      } else if (activeDraft.type === 'stroke' && activeDraft.highlighter) {
+        ctx.save();
+        ctx.globalAlpha = 0.45;
+        this.renderStroke(ctx, activeDraft);
+        ctx.restore();
+      } else {
+        this.renderObject(ctx, activeDraft, assets, camera.zoom);
+      }
+    }
+
+    // 2g. Laser pointer / fading ink trails
+    this.renderLaser(ctx);
+
+    // 2h. Selection indicators & bounding box
+    if (selectedIds.size > 0) {
+      this.renderSelection(ctx, objects, selectedIds, camera.zoom, activeSelectionBox);
+    }
+
+    // 2i. Lasso outline
+    if (lassoPoly && lassoPoly.length >= 4) {
+      ctx.save();
+      ctx.strokeStyle = '#2b6cb0';
+      ctx.lineWidth = 1.5 / camera.zoom;
+      ctx.setLineDash([4 / camera.zoom, 4 / camera.zoom]);
+      ctx.fillStyle = 'rgba(43, 108, 176, 0.08)';
+      ctx.beginPath();
+      ctx.moveTo(lassoPoly[0], lassoPoly[1]);
+      for (let i = 2; i < lassoPoly.length; i += 2) {
+        ctx.lineTo(lassoPoly[i], lassoPoly[i + 1]);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // 2j. Eraser circle cursor with velocity-adaptive radius
+    if (eraserState && eraserState.active) {
+      ctx.save();
+      const strokeColor = settings.dark ? 'rgba(255, 255, 255, 0.8)' : 'rgba(71, 85, 105, 0.85)';
+      const fillColor = settings.dark ? 'rgba(255, 255, 255, 0.16)' : 'rgba(203, 213, 225, 0.35)';
+      ctx.strokeStyle = strokeColor;
+      ctx.fillStyle = fillColor;
+      ctx.lineWidth = 1.8 / camera.zoom;
+      ctx.setLineDash([5 / camera.zoom, 4 / camera.zoom]);
+      ctx.beginPath();
+      ctx.arc(eraserState.x, eraserState.y, eraserState.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Center dot
+      ctx.setLineDash([]);
+      ctx.fillStyle = strokeColor;
+      ctx.beginPath();
+      ctx.arc(eraserState.x, eraserState.y, 2 / camera.zoom, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    ctx.restore(); // Exit camera world transform
+
+    // 3. Screen overlays (Ruler, Radial menu, Minimap)
+    ruler.render(ctx);
+    radial.render(ctx);
+    minimap.render(ctx, camera, objects, w, h, settings.dark);
+
+    ctx.restore();
+  }
+
+  private renderBackground(
+    ctx: CanvasRenderingContext2D,
+    cam: Camera,
+    settings: BoardSettings,
+    w: number,
+    h: number,
+  ) {
+    const bg = settings.dark ? '#1a202c' : '#ffffff';
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    if (settings.pattern === 'none') return;
+
+    const baseSpacing = 28;
+    const spacing = baseSpacing * cam.zoom;
+    if (spacing < 10) return; // Too dense to render
+
+    const offsetX = cam.x % spacing;
+    const offsetY = cam.y % spacing;
+
+    ctx.save();
+    const patternColor = settings.dark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.12)';
+    ctx.strokeStyle = patternColor;
+    ctx.fillStyle = patternColor;
+
+    if (settings.pattern === 'dots') {
+      const r = Math.max(1, 1.2 * Math.min(2, cam.zoom));
+      for (let x = offsetX; x < w; x += spacing) {
+        for (let y = offsetY; y < h; y += spacing) {
+          ctx.beginPath();
+          ctx.arc(x, y, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    } else if (settings.pattern === 'grid') {
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = offsetX; x < w; x += spacing) {
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+      }
+      for (let y = offsetY; y < h; y += spacing) {
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+      }
+      ctx.stroke();
+    } else if (settings.pattern === 'lines') {
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let y = offsetY; y < h; y += spacing) {
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  private renderFrame(ctx: CanvasRenderingContext2D, f: FrameObj, zoom: number, dark: boolean, isPreview = false) {
+    ctx.save();
+    // Frame boundary
+    ctx.fillStyle = isPreview
+      ? 'rgba(49, 130, 206, 0.12)'
+      : dark ? 'rgba(30, 41, 59, 0.45)' : 'rgba(248, 250, 252, 0.7)';
+    ctx.strokeStyle = isPreview ? '#3182ce' : (dark ? '#475569' : '#cbd5e1');
+    ctx.lineWidth = (isPreview ? 2.5 : 2) / zoom;
+    ctx.setLineDash(isPreview ? [8 / zoom, 5 / zoom] : [6 / zoom, 4 / zoom]);
+    ctx.strokeRect(f.x, f.y, f.w, f.h);
+    ctx.fillRect(f.x, f.y, f.w, f.h);
+    ctx.setLineDash([]);
+
+    // Frame title pill on top
+    const lBox = frameLabelBox(f, zoom);
+    ctx.fillStyle = '#3182ce';
+    ctx.beginPath();
+    ctx.roundRect(lBox.x, lBox.y, lBox.w, lBox.h, 4 / zoom);
+    ctx.fill();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${12 / zoom}px -apple-system, Segoe UI, sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(f.name || 'Frame', lBox.x + 6 / zoom, lBox.y + lBox.h / 2);
+    ctx.restore();
+  }
+
+  private renderPdfPage(ctx: CanvasRenderingContext2D, p: PdfPageObj, assets: Assets, zoom: number) {
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    if (p.rot) {
+      ctx.translate(p.w / 2, p.h / 2);
+      ctx.rotate(p.rot);
+      ctx.translate(-p.w / 2, -p.h / 2);
+    }
+
+    // Shadow
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.15)';
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetY = 3;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, p.w, p.h);
+    ctx.shadowColor = 'transparent';
+
+    const wantScale = Math.max(1, zoom * (p.w / (p.pw * PT)));
+    const entry = assets.pageBitmap(p.asset, p.page, wantScale);
+    if (entry && entry.canvas.width > 0) {
+      ctx.drawImage(entry.canvas, 0, 0, p.w, p.h);
+    } else {
+      ctx.fillStyle = '#f7fafc';
+      ctx.fillRect(0, 0, p.w, p.h);
+      ctx.fillStyle = '#718096';
+      ctx.font = '14px -apple-system, Segoe UI, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(`Loading Page ${p.page + 1}...`, p.w / 2, p.h / 2);
+    }
+    ctx.restore();
+  }
+
+  private renderImage(ctx: CanvasRenderingContext2D, im: ImageObj, assets: Assets) {
+    ctx.save();
+    ctx.translate(im.x + im.w / 2, im.y + im.h / 2);
+    if (im.rot) ctx.rotate(im.rot);
+    ctx.translate(-im.w / 2, -im.h / 2);
+
+    const img = assets.image(im.asset);
+    if (img) {
+      if (im.crop) {
+        const nw = 'naturalWidth' in img ? img.naturalWidth : img.width;
+        const nh = 'naturalHeight' in img ? img.naturalHeight : img.height;
+        const sx = im.crop.x * nw;
+        const sy = im.crop.y * nh;
+        const sw = im.crop.w * nw;
+        const sh = im.crop.h * nh;
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, im.w, im.h);
+      } else {
+        ctx.drawImage(img, 0, 0, im.w, im.h);
+      }
+    } else {
+      ctx.fillStyle = '#edf2f7';
+      ctx.fillRect(0, 0, im.w, im.h);
+      ctx.strokeStyle = '#cbd5e0';
+      ctx.strokeRect(0, 0, im.w, im.h);
+    }
+    ctx.restore();
+  }
+
+  private renderObject(ctx: CanvasRenderingContext2D, o: Obj, assets: Assets, zoom: number) {
+    switch (o.type) {
+      case 'stroke':
+        this.renderStroke(ctx, o);
+        break;
+      case 'shape':
+        this.renderShape(ctx, o);
+        break;
+      case 'sticky':
+        this.renderSticky(ctx, o);
+        break;
+      case 'text':
+        this.renderText(ctx, o);
+        break;
+    }
+  }
+
+  private renderStroke(ctx: CanvasRenderingContext2D, s: StrokeObj) {
+    const g = strokeGeometry(s);
+    ctx.fillStyle = s.color;
+    ctx.fill(g.path);
+  }
+
+  private renderShape(ctx: CanvasRenderingContext2D, sh: ShapeObj) {
+    ctx.save();
+    ctx.strokeStyle = sh.color;
+    ctx.lineWidth = sh.width;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.setLineDash(shapeDash(sh));
+
+    if (sh.kind === 'line' || sh.kind === 'arrow') {
+      const [x1, y1, x2, y2] = sh.pts!;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+
+      // Arrowheads are always drawn solid
+      ctx.setLineDash([]);
+      const arrows = shapeArrows(sh);
+      const head = (fx: number, fy: number, tx: number, ty: number) => {
+        const wg = arrowWings(fx, fy, tx, ty, sh.width);
+        ctx.beginPath();
+        ctx.moveTo(wg[0], wg[1]);
+        ctx.lineTo(tx, ty);
+        ctx.lineTo(wg[2], wg[3]);
+        ctx.stroke();
+      };
+      if (arrows.end) head(x1, y1, x2, y2);
+      if (arrows.start) head(x2, y2, x1, y1);
+      ctx.restore();
+      return;
+    }
+
+    // Boxed shapes
+    ctx.translate(sh.x + sh.w / 2, sh.y + sh.h / 2);
+    if (sh.rot) ctx.rotate(sh.rot);
+    ctx.translate(-sh.w / 2, -sh.h / 2);
+
+    ctx.beginPath();
+    if (sh.kind === 'rect') {
+      ctx.roundRect(0, 0, sh.w, sh.h, Math.min(6, sh.w / 4, sh.h / 4));
+    } else if (sh.kind === 'ellipse') {
+      ctx.ellipse(sh.w / 2, sh.h / 2, sh.w / 2, sh.h / 2, 0, 0, Math.PI * 2);
+    } else if (sh.kind === 'triangle') {
+      ctx.moveTo(sh.w / 2, 0);
+      ctx.lineTo(sh.w, sh.h);
+      ctx.lineTo(0, sh.h);
+      ctx.closePath();
+    } else if (sh.kind === 'diamond') {
+      ctx.moveTo(sh.w / 2, 0);
+      ctx.lineTo(sh.w, sh.h / 2);
+      ctx.lineTo(sh.w / 2, sh.h);
+      ctx.lineTo(0, sh.h / 2);
+      ctx.closePath();
+    }
+
+    if (sh.fill) {
+      ctx.fillStyle = sh.fill;
+      ctx.fill();
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  private renderSticky(ctx: CanvasRenderingContext2D, st: StickyObj) {
+    ctx.save();
+    ctx.translate(st.x + st.w / 2, st.y + st.h / 2);
+    if (st.rot) ctx.rotate(st.rot);
+    ctx.translate(-st.w / 2, -st.h / 2);
+
+    // Drop shadow
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.18)';
+    ctx.shadowBlur = 8;
+    ctx.shadowOffsetY = 3;
+
+    ctx.fillStyle = st.color;
+    ctx.beginPath();
+    ctx.roundRect(0, 0, st.w, st.h, 4);
+    ctx.fill();
+    ctx.shadowColor = 'transparent';
+
+    // Text inside sticky note
+    ctx.fillStyle = '#1a202c';
+    ctx.font = `${st.fontSize}px ${FONTS.hand}`;
+    const padding = 14;
+    const layout = layoutText(st.text || '', 'hand', st.fontSize, st.w - padding * 2);
+    let ty = padding + st.fontSize * 0.9;
+    for (const line of layout.lines) {
+      ctx.fillText(line, padding, ty);
+      ty += layout.lineHeight;
+    }
+    ctx.restore();
+  }
+
+  private renderText(ctx: CanvasRenderingContext2D, t: TextObj) {
+    ctx.save();
+    ctx.translate(t.x + t.w / 2, t.y + t.h / 2);
+    if (t.rot) ctx.rotate(t.rot);
+    ctx.translate(-t.w / 2, -t.h / 2);
+
+    ctx.fillStyle = t.color;
+    const weight = t.bold ? 'bold ' : '';
+    const style = t.italic ? 'italic ' : '';
+    ctx.font = `${style}${weight}${t.fontSize}px ${FONTS[t.font]}`;
+    const layout = layoutText(t.text || '', t.font, t.fontSize, t.w, t.bold, t.italic);
+    let ty = t.fontSize * 0.9;
+    for (const line of layout.lines) {
+      ctx.fillText(line, 0, ty);
+      ty += layout.lineHeight;
+    }
+    ctx.restore();
+  }
+
+  private renderLaser(ctx: CanvasRenderingContext2D) {
+    const now = performance.now();
+    for (let i = 1; i < this.laserPoints.length; i++) {
+      const p1 = this.laserPoints[i - 1];
+      const p2 = this.laserPoints[i];
+      const age = now - p2.time;
+      if (age > 1200) continue;
+      const alpha = 1 - age / 1200;
+
+      ctx.save();
+      ctx.strokeStyle = p2.color;
+      ctx.globalAlpha = alpha;
+      ctx.lineWidth = 6 * alpha;
+      ctx.lineCap = 'round';
+      ctx.shadowColor = p2.color;
+      ctx.shadowBlur = 10;
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  private renderSelection(
+    ctx: CanvasRenderingContext2D,
+    objects: Obj[],
+    selectedIds: Set<string>,
+    zoom: number,
+    customBox?: Box | null,
+  ) {
+    const sf = selectionFrame(objects, selectedIds);
+    if (!sf) return;
+    const b = customBox ?? sf.box;
+
+    ctx.save();
+    const accent = '#2563eb';
+
+    // Main selection box
+    const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    ctx.save();
+    ctx.translate(cx, cy);
+    if (b.rot) ctx.rotate(b.rot);
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 1.5 / zoom;
+    if (sf.locked) ctx.setLineDash([6 / zoom, 4 / zoom]);
+    ctx.strokeRect(-b.w / 2, -b.h / 2, b.w, b.h);
+    ctx.setLineDash([]);
+    if (sf.canRotate && !sf.locked) {
+      ctx.beginPath();
+      ctx.moveTo(0, -b.h / 2);
+      ctx.lineTo(0, -b.h / 2 - ROT_HANDLE_OFFSET / zoom);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Classic Anchor Point (pivot indicator at center of rotation)
+    if (sf.canRotate && !sf.locked) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, 3.5 / zoom, 0, Math.PI * 2);
+      ctx.fillStyle = accent;
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.2 / zoom;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(cx - 5.5 / zoom, cy);
+      ctx.lineTo(cx + 5.5 / zoom, cy);
+      ctx.moveTo(cx, cy - 5.5 / zoom);
+      ctx.lineTo(cx, cy + 5.5 / zoom);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    if (!sf.locked) {
+      for (const [h, hx, hy] of handlePositions(b, zoom, sf.canRotate)) {
+        ctx.beginPath();
+        if (h === 'rot') {
+          ctx.arc(hx, hy, 7.5 / zoom, 0, Math.PI * 2);
+          ctx.fillStyle = accent;
+          ctx.fill();
+          // circular arrow glyph
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.6 / zoom;
+          ctx.beginPath();
+          ctx.arc(hx, hy, 3.8 / zoom, -Math.PI * 0.9, Math.PI * 0.5);
+          ctx.stroke();
+        } else {
+          const s = (h.length === 2 ? 11 : 9) / zoom;
+          ctx.save();
+          ctx.translate(hx, hy);
+          ctx.rotate(b.rot);
+          ctx.fillStyle = '#ffffff';
+          ctx.strokeStyle = accent;
+          ctx.lineWidth = 1.8 / zoom;
+          ctx.beginPath();
+          ctx.roundRect(-s / 2, -s / 2, s, s, 2.5 / zoom);
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+    }
+    ctx.restore();
+  }
+}
