@@ -94,7 +94,11 @@ export async function loadBoard(
   scene.reset(boardData.objects || []);
   return {
     camera: boardData.camera || { x: 0, y: 0, zoom: 1 },
-    settings: boardData.settings || { pattern: 'dots', dark: false },
+    settings: {
+      pattern: boardData.settings?.pattern ?? 'dots',
+      dark: boardData.settings?.dark ?? false,
+      smoothing: boardData.settings?.smoothing ?? 'balanced',
+    },
   };
 }
 

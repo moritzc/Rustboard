@@ -548,8 +548,27 @@ export class InputManager {
 
     if (effectiveTool === 'pen' || effectiveTool === 'highlighter') {
       if (this.activeDraft && this.activeDraft.type === 'stroke') {
-        const pressure = e.pressure > 0 ? e.pressure : 0.5;
-        this.rawStrokePts.push(wx, wy, pressure);
+        const coalesced = (e.pointerType !== 'mouse' && e.getCoalescedEvents && e.getCoalescedEvents().length > 0)
+          ? e.getCoalescedEvents()
+          : [e];
+
+        for (const ce of coalesced) {
+          let [cwx, cwy] = this.screenToWorld(ce.clientX, ce.clientY);
+          if (snap) {
+            const cSnap = this.ruler.snapScreenPoint(ce.clientX, ce.clientY);
+            if (cSnap) [cwx, cwy] = this.screenToWorld(cSnap.x, cSnap.y);
+          }
+          const cp = ce.pressure > 0 ? ce.pressure : 0.5;
+          const len = this.rawStrokePts.length;
+          if (len >= 3) {
+            const lx = this.rawStrokePts[len - 3];
+            const ly = this.rawStrokePts[len - 2];
+            const screenDist = Math.hypot((cwx - lx) * this.camera.zoom, (cwy - ly) * this.camera.zoom);
+            if (screenDist < 1.2) continue;
+          }
+          this.rawStrokePts.push(cwx, cwy, cp);
+        }
+
         this.activeDraft.pts = this.rawStrokePts.slice();
         this.onNeedRender();
       }

@@ -229,6 +229,13 @@ async fn fetch_url(url: String) -> Result<Response, String> {
 }
 
 fn main() {
+    if std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_err() {
+        std::env::set_var(
+            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+            "--enable-gpu-rasterization --enable-zero-copy",
+        );
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Blobs::default())

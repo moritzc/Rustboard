@@ -1,6 +1,6 @@
 import type { Assets } from './assets';
 import type { EraserState } from './eraser';
-import type { BBox } from './geom';
+import { bboxIntersects, type BBox } from './geom';
 import { strokeGeometry } from './ink';
 import type { Minimap } from './minimap';
 import {
@@ -9,7 +9,7 @@ import {
 import type { RadialMenu } from './radial_menu';
 import type { Ruler } from './ruler';
 import { FONTS, layoutText } from './textlayout';
-import type { BoardSettings, Box, Camera, FrameObj, ImageObj, Obj, PdfPageObj, ShapeObj, StickyObj, StrokeObj, TextObj } from './types';
+import type { BoardSettings, Box, Camera, FrameObj, ImageObj, InkingSmoothing, Obj, PdfPageObj, ShapeObj, StickyObj, StrokeObj, TextObj } from './types';
 import { PT } from './types';
 
 export interface LaserPoint {
@@ -21,6 +21,13 @@ export interface LaserPoint {
 
 export class Renderer {
   laserPoints: LaserPoint[] = [];
+  private sceneCanvas: HTMLCanvasElement | null = null;
+  private sceneCtx: CanvasRenderingContext2D | null = null;
+  private sceneCacheKey = '';
+
+  invalidateCache() {
+    this.sceneCacheKey = '';
+  }
 
   addLaser(x: number, y: number, color = '#ff1744') {
     this.laserPoints.push({ x, y, time: performance.now(), color });
@@ -45,62 +52,107 @@ export class Renderer {
     lassoPoly?: number[] | null,
     eraserState?: EraserState | null,
     activeSelectionBox?: Box | null,
+    sceneVersion?: number,
+    assetsVersion?: number,
   ) {
-    const w = ctx.canvas.width;
-    const h = ctx.canvas.height;
+    const dpr = window.devicePixelRatio || 1;
+    const canvasW = ctx.canvas.width;
+    const canvasH = ctx.canvas.height;
+    const cssW = canvasW / dpr;
+    const cssH = canvasH / dpr;
+
+    // Cache key for the static committed scene
+    const sVer = sceneVersion ?? 0;
+    const aVer = assetsVersion ?? 0;
+    const smoothingMode = settings.smoothing || 'balanced';
+    const cacheKey = `${canvasW}x${canvasH}_${camera.x.toFixed(1)}_${camera.y.toFixed(1)}_${camera.zoom.toFixed(4)}_${settings.dark}_${settings.pattern}_${smoothingMode}_sv${sVer}_av${aVer}`;
+
+    const canUseCache = this.sceneCacheKey === cacheKey && this.sceneCanvas !== null;
+
+    if (!canUseCache) {
+      if (!this.sceneCanvas) {
+        this.sceneCanvas = document.createElement('canvas');
+      }
+      if (this.sceneCanvas.width !== canvasW || this.sceneCanvas.height !== canvasH) {
+        this.sceneCanvas.width = canvasW;
+        this.sceneCanvas.height = canvasH;
+        this.sceneCtx = this.sceneCanvas.getContext('2d');
+      }
+      if (!this.sceneCtx) {
+        this.sceneCtx = this.sceneCanvas.getContext('2d');
+      }
+
+      const sCtx = this.sceneCtx!;
+      sCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      sCtx.clearRect(0, 0, cssW, cssH);
+
+      // 1. Background
+      this.renderBackground(sCtx, camera, settings, cssW, cssH);
+
+      // 2. Camera Transform for World Objects
+      sCtx.save();
+      sCtx.translate(camera.x, camera.y);
+      sCtx.scale(camera.zoom, camera.zoom);
+
+      // Visible viewport in world coordinates
+      const vLeft = -camera.x / camera.zoom;
+      const vTop = -camera.y / camera.zoom;
+      const vRight = (cssW - camera.x) / camera.zoom;
+      const vBottom = (cssH - camera.y) / camera.zoom;
+      const viewBBox: BBox = [vLeft - 80, vTop - 80, vRight + 80, vBottom + 80];
+
+      // Partition objects into layers for clean rendering with viewport culling
+      const frames: FrameObj[] = [];
+      const pdfPages: PdfPageObj[] = [];
+      const images: ImageObj[] = [];
+      const highlighters: StrokeObj[] = [];
+      const others: Obj[] = [];
+
+      for (const o of objects) {
+        if (!bboxIntersects(bboxOf(o), viewBBox)) continue;
+        if (o.type === 'frame') frames.push(o);
+        else if (o.type === 'pdfpage') pdfPages.push(o);
+        else if (o.type === 'image') images.push(o);
+        else if (o.type === 'stroke' && o.highlighter) highlighters.push(o);
+        else others.push(o);
+      }
+
+      // 2a. Frames (background page containers)
+      for (const f of frames) this.renderFrame(sCtx, f, camera.zoom, settings.dark);
+
+      // 2b. PDF Pages
+      for (const p of pdfPages) this.renderPdfPage(sCtx, p, assets, camera.zoom);
+
+      // 2c. Images
+      for (const im of images) this.renderImage(sCtx, im, assets);
+
+      // 2d. Highlighters (drawn under normal ink with opacity)
+      if (highlighters.length > 0) {
+        sCtx.save();
+        sCtx.globalAlpha = 0.42;
+        for (const hl of highlighters) this.renderStroke(sCtx, hl, smoothingMode);
+        sCtx.restore();
+      }
+
+      // 2e. Regular Ink & Objects (shapes, stickies, text, normal ink)
+      for (const o of others) {
+        this.renderObject(sCtx, o, assets, camera.zoom, smoothingMode);
+      }
+
+      sCtx.restore(); // Exit camera world transform
+      this.sceneCacheKey = cacheKey;
+    }
 
     ctx.save();
-    ctx.clearRect(0, 0, w, h);
+    // Blit the pre-rendered scene buffer directly to the screen (1:1 physical pixels)
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(this.sceneCanvas!, 0, 0);
+    ctx.restore();
 
-    // 1. Background
-    this.renderBackground(ctx, camera, settings, w, h);
-
-    // 2. Camera Transform for World Objects
+    // Now render dynamic overlays with camera transform
     ctx.save();
     ctx.translate(camera.x, camera.y);
     ctx.scale(camera.zoom, camera.zoom);
-
-    // Visible viewport in world coordinates
-    const vLeft = -camera.x / camera.zoom;
-    const vTop = -camera.y / camera.zoom;
-    const vRight = (w - camera.x) / camera.zoom;
-    const vBottom = (h - camera.y) / camera.zoom;
-    const viewBBox: BBox = [vLeft - 50, vTop - 50, vRight + 50, vBottom + 50];
-
-    // Partition objects into layers for clean rendering
-    const frames: FrameObj[] = [];
-    const pdfPages: PdfPageObj[] = [];
-    const images: ImageObj[] = [];
-    const highlighters: StrokeObj[] = [];
-    const others: Obj[] = [];
-
-    for (const o of objects) {
-      if (o.type === 'frame') frames.push(o);
-      else if (o.type === 'pdfpage') pdfPages.push(o);
-      else if (o.type === 'image') images.push(o);
-      else if (o.type === 'stroke' && o.highlighter) highlighters.push(o);
-      else others.push(o);
-    }
-
-    // 2a. Frames (background page containers)
-    for (const f of frames) this.renderFrame(ctx, f, camera.zoom, settings.dark);
-
-    // 2b. PDF Pages
-    for (const p of pdfPages) this.renderPdfPage(ctx, p, assets, camera.zoom);
-
-    // 2c. Images
-    for (const im of images) this.renderImage(ctx, im, assets);
-
-    // 2d. Highlighters (drawn under normal ink with opacity)
-    ctx.save();
-    ctx.globalAlpha = 0.42;
-    for (const hl of highlighters) this.renderStroke(ctx, hl);
-    ctx.restore();
-
-    // 2e. Regular Ink & Objects (shapes, stickies, text, normal ink)
-    for (const o of others) {
-      this.renderObject(ctx, o, assets, camera.zoom);
-    }
 
     // 2f. Active interactive draft (in-progress stroke, shape, or frame)
     if (activeDraft) {
@@ -109,10 +161,10 @@ export class Renderer {
       } else if (activeDraft.type === 'stroke' && activeDraft.highlighter) {
         ctx.save();
         ctx.globalAlpha = 0.45;
-        this.renderStroke(ctx, activeDraft);
+        this.renderStroke(ctx, activeDraft, smoothingMode);
         ctx.restore();
       } else {
-        this.renderObject(ctx, activeDraft, assets, camera.zoom);
+        this.renderObject(ctx, activeDraft, assets, camera.zoom, smoothingMode);
       }
     }
 
@@ -170,9 +222,7 @@ export class Renderer {
     // 3. Screen overlays (Ruler, Radial menu, Minimap)
     ruler.render(ctx);
     radial.render(ctx);
-    minimap.render(ctx, camera, objects, w, h, settings.dark);
-
-    ctx.restore();
+    minimap.render(ctx, camera, objects, cssW, cssH, settings.dark);
   }
 
   private renderBackground(
@@ -202,13 +252,14 @@ export class Renderer {
 
     if (settings.pattern === 'dots') {
       const r = Math.max(1, 1.2 * Math.min(2, cam.zoom));
+      ctx.beginPath();
       for (let x = offsetX; x < w; x += spacing) {
         for (let y = offsetY; y < h; y += spacing) {
-          ctx.beginPath();
+          ctx.moveTo(x + r, y);
           ctx.arc(x, y, r, 0, Math.PI * 2);
-          ctx.fill();
         }
       }
+      ctx.fill();
     } else if (settings.pattern === 'grid') {
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -321,10 +372,10 @@ export class Renderer {
     ctx.restore();
   }
 
-  private renderObject(ctx: CanvasRenderingContext2D, o: Obj, assets: Assets, zoom: number) {
+  private renderObject(ctx: CanvasRenderingContext2D, o: Obj, assets: Assets, zoom: number, smoothingMode?: InkingSmoothing) {
     switch (o.type) {
       case 'stroke':
-        this.renderStroke(ctx, o);
+        this.renderStroke(ctx, o, smoothingMode);
         break;
       case 'shape':
         this.renderShape(ctx, o);
@@ -338,8 +389,8 @@ export class Renderer {
     }
   }
 
-  private renderStroke(ctx: CanvasRenderingContext2D, s: StrokeObj) {
-    const g = strokeGeometry(s);
+  private renderStroke(ctx: CanvasRenderingContext2D, s: StrokeObj, smoothingMode?: InkingSmoothing) {
+    const g = strokeGeometry(s, smoothingMode);
     ctx.fillStyle = s.color;
     ctx.fill(g.path);
   }

@@ -40,6 +40,7 @@ export class Assets {
   private queue = new Map<string, number>();
   private working = false;
   private dataUrls = new Map<string, string>();
+  version = 0;
 
   constructor(private onUpdate: () => void) {}
 
@@ -85,6 +86,7 @@ export class Assets {
         decodeImage(a)
           .then((im) => {
             this.images.set(id, im);
+            this.version++;
             this.onUpdate();
           })
           .catch((e) => console.error('image decode failed', e))
@@ -160,6 +162,7 @@ export class Assets {
           const canvas = await this.renderPage(asset, +pageStr, scale);
           this.pages.set(key, { canvas, scale, used: performance.now() });
           this.evict();
+          this.version++;
           this.onUpdate();
         } catch (err) {
           console.error('pdf render failed', err);

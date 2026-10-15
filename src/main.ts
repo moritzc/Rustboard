@@ -18,6 +18,7 @@ async function bootstrap() {
   const settings: BoardSettings = {
     pattern: 'dots',
     dark: false,
+    smoothing: 'balanced',
   };
 
   const camera: Camera = {
@@ -84,6 +85,7 @@ async function bootstrap() {
     canvas.style.width = `${w}px`;
     canvas.style.height = `${h}px`;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    renderer.invalidateCache();
     requestRender();
   }
 
@@ -91,6 +93,7 @@ async function bootstrap() {
   resizeCanvas();
 
   // Animation Loop
+  let lastZoom = -1;
   function tick() {
     if (renderer.laserPoints.length > 0) {
       renderer.pruneLaser();
@@ -113,8 +116,13 @@ async function bootstrap() {
         input.lassoPoly,
         input.eraserState,
         input.activeSelectionBox,
+        scene.version,
+        assets.version,
       );
-      ui.updateZoomDisplay();
+      if (Math.abs(camera.zoom - lastZoom) > 0.001) {
+        lastZoom = camera.zoom;
+        ui.updateZoomDisplay();
+      }
     }
     requestAnimationFrame(tick);
   }

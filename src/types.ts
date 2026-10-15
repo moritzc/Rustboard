@@ -17,6 +17,7 @@ export type LineDash = 'solid' | 'dashed' | 'dotted';
 export type SelectMode = 'lasso' | 'rect';
 export type FontKey = 'sans' | 'hand' | 'serif' | 'mono';
 export type Pattern = 'none' | 'dots' | 'grid' | 'lines';
+export type InkingSmoothing = 'raw' | 'balanced' | 'smooth';
 
 interface Base {
   id: string;
@@ -102,6 +103,7 @@ export type BoxObj = Exclude<Obj, StrokeObj>;
 export interface BoardSettings {
   pattern: Pattern;
   dark: boolean;
+  smoothing?: InkingSmoothing;
 }
 
 export interface Camera {

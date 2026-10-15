@@ -588,6 +588,18 @@ export class UIManager {
         </div>
 
         <div class="option-group">
+          <div class="option-label">Inking Smoothing & Stabilization</div>
+          <div class="pill-row">
+            <div class="pill ${(!this.settings.smoothing || this.settings.smoothing === 'balanced') ? 'selected' : ''}" data-smooth="balanced">Balanced</div>
+            <div class="pill ${this.settings.smoothing === 'raw' ? 'selected' : ''}" data-smooth="raw">Low / Direct</div>
+            <div class="pill ${this.settings.smoothing === 'smooth' ? 'selected' : ''}" data-smooth="smooth">High / Stabilized</div>
+          </div>
+          <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+            Balanced gives natural handwriting. Low reduces input latency. High stabilizes jitter for neat lettering.
+          </div>
+        </div>
+
+        <div class="option-group">
           <div class="option-label">Behaviors & Overlays</div>
           <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer;">
             <input type="checkbox" id="chk-minimap" ${this.minimap.visible ? 'checked' : ''}/>
@@ -610,6 +622,15 @@ export class UIManager {
       p.addEventListener('click', () => {
         this.settings.pattern = p.dataset.pat as any;
         modal.querySelectorAll('[data-pat]').forEach((x) => x.classList.remove('selected'));
+        p.classList.add('selected');
+        this.onNeedRender();
+      });
+    });
+
+    modal.querySelectorAll<HTMLDivElement>('[data-smooth]').forEach((p) => {
+      p.addEventListener('click', () => {
+        this.settings.smoothing = p.dataset.smooth as any;
+        modal.querySelectorAll('[data-smooth]').forEach((x) => x.classList.remove('selected'));
         p.classList.add('selected');
         this.onNeedRender();
       });
