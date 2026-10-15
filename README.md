@@ -8,7 +8,7 @@
 ---
 
 > [!NOTE]
-> **Project Disclaimer:** This project was developed with the assistance of AI agent tooling to create a fast, distraction-free, and reliable digital whiteboard tailored for my girlfriend's online teaching and tutoring sessions. It solves real-world pain points of mainstream whiteboard apps—sluggish web engines, subscription lock-in, unreliable touch/pen handling, and bloated feature sets—by focusing entirely on live screen sharing and seamless document workflows.
+> **AI Disclaimer:** This project was developed by AI to create a fast, distraction-free, and reliable digital whiteboard tailored for my girlfriend's online teaching and tutoring sessions. It solves real-world pain points of mainstream whiteboard apps—sluggish web engines, subscription lock-in, unreliable touch/pen handling, and bloated feature sets—by focusing entirely on live screen sharing and seamless document workflows.
 
 ---
 
