@@ -31,8 +31,10 @@ fn fontdb() -> Arc<usvg::fontdb::Database> {
 
 /// SVG string -> single page PDF bytes.
 fn svg_to_pdf(svg: &str) -> R<Vec<u8>> {
-    let mut opt = usvg::Options::default();
-    opt.fontdb = fontdb();
+    let opt = usvg::Options {
+        fontdb: fontdb(),
+        ..Default::default()
+    };
     let tree = usvg::Tree::from_str(svg, &opt).map_err(|e| format!("SVG parse error: {e}"))?;
     svg2pdf::to_pdf(
         &tree,
@@ -43,13 +45,13 @@ fn svg_to_pdf(svg: &str) -> R<Vec<u8>> {
 }
 
 fn real(v: f32) -> Object {
-    Object::Real(v.into())
+    Object::Real(v)
 }
 
 fn num(o: &Object) -> f32 {
     match o {
         Object::Integer(i) => *i as f32,
-        Object::Real(r) => (*r).into(),
+        Object::Real(r) => *r,
         _ => 0.0,
     }
 }
@@ -62,7 +64,10 @@ fn import_page_as_xobject(target: &mut Document, src_bytes: &[u8]) -> R<(ObjectI
 
     let page_id = *src.get_pages().values().next().ok_or("empty PDF page")?;
     let content = src.get_page_content(page_id).map_err(|e| e.to_string())?;
-    let page = src.get_dictionary(page_id).map_err(|e| e.to_string())?.clone();
+    let page = src
+        .get_dictionary(page_id)
+        .map_err(|e| e.to_string())?
+        .clone();
 
     let bbox = match page.get(b"MediaBox") {
         Ok(Object::Array(a)) if a.len() == 4 => [num(&a[0]), num(&a[1]), num(&a[2]), num(&a[3])],
@@ -74,11 +79,7 @@ fn import_page_as_xobject(target: &mut Document, src_bytes: &[u8]) -> R<(ObjectI
         .unwrap_or_else(|_| Object::Dictionary(Dictionary::new()));
     let group = page.get(b"Group").ok().cloned();
 
-    let catalog_id = src
-        .trailer
-        .get(b"Root")
-        .and_then(|o| o.as_reference())
-        .ok();
+    let catalog_id = src.trailer.get(b"Root").and_then(|o| o.as_reference()).ok();
     let pages_id = page.get(b"Parent").and_then(|o| o.as_reference()).ok();
     for (id, obj) in std::mem::take(&mut src.objects) {
         if id == page_id || Some(id) == catalog_id || Some(id) == pages_id {
@@ -191,7 +192,8 @@ fn rect_of(doc: &Document, o: &Object) -> Option<[f32; 4]> {
 /// Stamp annotation overlays onto an existing PDF. `overlays`: (0-based page index, svg).
 /// Each svg must have the page's *displayed* size (rotation applied, CropBox) in pt.
 pub fn annotate_pdf(original: &[u8], overlays: &[(usize, String)]) -> R<Vec<u8>> {
-    let mut doc = Document::load_mem(original).map_err(|e| format!("Could not read original PDF: {e}"))?;
+    let mut doc =
+        Document::load_mem(original).map_err(|e| format!("Could not read original PDF: {e}"))?;
     if doc.is_encrypted() {
         return Err("The original PDF is encrypted; use normal PDF export instead.".into());
     }
@@ -227,7 +229,11 @@ pub fn annotate_pdf(original: &[u8], overlays: &[(usize, String)]) -> R<Vec<u8>>
         // Overlay XObject space: [0,W]x[0,H] (displayed orientation). Map to page space.
         let ow = (bbox[2] - bbox[0]).max(0.001);
         let oh = (bbox[3] - bbox[1]).max(0.001);
-        let (dw, dh) = if rotate == 90 || rotate == 270 { (h, w) } else { (w, h) };
+        let (dw, dh) = if rotate == 90 || rotate == 270 {
+            (h, w)
+        } else {
+            (w, h)
+        };
         let (sx, sy) = (dw / ow, dh / oh);
         // m1: normalise overlay to displayed size
         let m1 = [sx, 0.0, 0.0, sy, -bbox[0] * sx, -bbox[1] * sy];

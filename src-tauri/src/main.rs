@@ -129,7 +129,10 @@ struct SvgPage {
 
 #[tauri::command]
 async fn export_pdf(pages: Vec<SvgPage>, path: String) -> Result<(), String> {
-    let pages: Vec<(String, f32, f32)> = pages.into_iter().map(|p| (p.svg, p.width, p.height)).collect();
+    let pages: Vec<(String, f32, f32)> = pages
+        .into_iter()
+        .map(|p| (p.svg, p.width, p.height))
+        .collect();
     let bytes = tauri::async_runtime::spawn_blocking(move || pdf::build_pdf(&pages))
         .await
         .map_err(|e| e.to_string())??;
@@ -170,8 +173,9 @@ async fn clipboard_read_image() -> Result<Response, String> {
         Ok(img) => img,
         Err(_) => return Ok(Response::new(Vec::new())),
     };
-    let buf = image::RgbaImage::from_raw(img.width as u32, img.height as u32, img.bytes.into_owned())
-        .ok_or("invalid clipboard image")?;
+    let buf =
+        image::RgbaImage::from_raw(img.width as u32, img.height as u32, img.bytes.into_owned())
+            .ok_or("invalid clipboard image")?;
     let mut out = std::io::Cursor::new(Vec::new());
     buf.write_to(&mut out, image::ImageFormat::Png)
         .map_err(|e| e.to_string())?;
