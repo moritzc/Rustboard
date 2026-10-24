@@ -18,6 +18,7 @@ function escapeXml(s: string) {
 
 export class UIManager {
   private currentFilePath: string | null = null;
+  private lastActivePenBtn: HTMLButtonElement | null = null;
 
   constructor(
     private container: HTMLElement,
@@ -72,23 +73,23 @@ export class UIManager {
 
       <!-- Pen Tray (Centered Bottom) -->
       <div class="floating-panel pen-tray">
-        <button class="tool-btn active" data-tool="pen" data-color="#1a202c" title="Black Pen">
+        <button class="tool-btn active" data-tool="pen" data-color="#1a202c" data-size="3.5" title="Pen 1 (Click again for size & color)">
           <svg viewBox="0 0 24 24"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
           <div class="pen-indicator" style="background: #1a202c;"></div>
         </button>
-        <button class="tool-btn" data-tool="pen" data-color="#2563eb" title="Blue Pen">
+        <button class="tool-btn" data-tool="pen" data-color="#2563eb" data-size="3.5" title="Pen 2 (Click again for size & color)">
           <svg viewBox="0 0 24 24"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
           <div class="pen-indicator" style="background: #2563eb;"></div>
         </button>
-        <button class="tool-btn" data-tool="pen" data-color="#dc2626" title="Red Pen">
+        <button class="tool-btn" data-tool="pen" data-color="#dc2626" data-size="3.5" title="Pen 3 (Click again for size & color)">
           <svg viewBox="0 0 24 24"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
           <div class="pen-indicator" style="background: #dc2626;"></div>
         </button>
-        <button class="tool-btn" data-tool="pen" data-color="#16a34a" title="Green Pen">
+        <button class="tool-btn" data-tool="pen" data-color="#16a34a" data-size="3.5" title="Pen 4 (Click again for size & color)">
           <svg viewBox="0 0 24 24"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
           <div class="pen-indicator" style="background: #16a34a;"></div>
         </button>
-        <button class="tool-btn" data-tool="highlighter" title="Highlighter (Click again for options)">
+        <button class="tool-btn" data-tool="highlighter" data-color="#ffd600" data-size="24" title="Highlighter (Click again for options)">
           <svg viewBox="0 0 24 24"><path d="m9 11-6 6v3h3l6-6"/><path d="m22 2-7.5 7.5L12 7l7.5-7.5z"/></svg>
           <div class="pen-indicator" style="background: #ffd600;"></div>
         </button>
@@ -174,18 +175,50 @@ export class UIManager {
     this.updateZoomDisplay();
   }
 
+  private applyPenButtonConfig(btn: HTMLButtonElement) {
+    const tool = btn.dataset.tool as Tool;
+    if (tool === 'pen') {
+      this.lastActivePenBtn = btn;
+      if (btn.dataset.color) {
+        this.input.penConfig.color = btn.dataset.color;
+      }
+      if (btn.dataset.size) {
+        const sz = Number(btn.dataset.size);
+        if (!Number.isNaN(sz) && sz > 0) {
+          this.input.penConfig.size = sz;
+        }
+      }
+    } else if (tool === 'highlighter') {
+      if (btn.dataset.color) {
+        this.input.highlighterConfig.color = btn.dataset.color;
+      }
+      if (btn.dataset.size) {
+        const sz = Number(btn.dataset.size);
+        if (!Number.isNaN(sz) && sz > 0) {
+          this.input.highlighterConfig.size = sz;
+        }
+      }
+    }
+  }
+
+  private closeAllPopovers() {
+    this.container.querySelector('.pen-popover')?.remove();
+    this.container.querySelector('.eraser-popover')?.remove();
+    this.container.querySelector('.shape-popover')?.remove();
+  }
+
   private bindUIEvents() {
     // Pen Tray Tool selection
     const buttons = this.container.querySelectorAll<HTMLButtonElement>('[data-tool]');
+    this.lastActivePenBtn = this.container.querySelector<HTMLButtonElement>('[data-tool="pen"]');
+
     buttons.forEach((btn) => {
       btn.addEventListener('click', () => {
         const tool = btn.dataset.tool as Tool;
         const wasActive = btn.classList.contains('active');
         buttons.forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
-        if (btn.dataset.color) {
-          this.input.penConfig.color = btn.dataset.color;
-        }
+        this.applyPenButtonConfig(btn);
         this.input.setTool(tool);
         if (tool === 'shape') {
           this.toggleShapePopover(btn);
@@ -193,37 +226,48 @@ export class UIManager {
           this.toggleEraserPopover(btn);
         } else if (wasActive && (tool === 'pen' || tool === 'highlighter')) {
           this.togglePenPopover(btn);
+        } else {
+          this.closeAllPopovers();
         }
       });
       if (btn.dataset.tool === 'eraser') {
         btn.addEventListener('contextmenu', (e) => {
           e.preventDefault();
+          buttons.forEach((b) => b.classList.remove('active'));
+          btn.classList.add('active');
+          this.input.setTool('eraser');
           this.toggleEraserPopover(btn);
+        });
+      } else if (btn.dataset.tool === 'pen' || btn.dataset.tool === 'highlighter') {
+        btn.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          const tool = btn.dataset.tool as Tool;
+          buttons.forEach((b) => b.classList.remove('active'));
+          btn.classList.add('active');
+          this.applyPenButtonConfig(btn);
+          this.input.setTool(tool);
+          this.togglePenPopover(btn);
         });
       }
     });
 
     // Wire input callbacks
     this.input.onToolChanged = (tool) => {
+      this.closeAllPopovers();
+      const targetPenBtn =
+        this.lastActivePenBtn ||
+        this.container.querySelector<HTMLButtonElement>('[data-tool="pen"]');
       buttons.forEach((b) => {
         if (b.dataset.tool !== tool) {
           b.classList.remove('active');
         } else if (tool === 'pen') {
-          const curColor = (this.input.penConfig.color || '').toLowerCase();
-          const btnColor = (b.dataset.color || '').toLowerCase();
-          b.classList.toggle('active', btnColor === curColor);
+          b.classList.toggle('active', b === targetPenBtn);
         } else {
           b.classList.add('active');
         }
       });
-      if (tool === 'pen') {
-        const hasActivePen = Array.from(buttons).some(
-          (b) => b.dataset.tool === 'pen' && b.classList.contains('active'),
-        );
-        if (!hasActivePen) {
-          const firstPen = this.container.querySelector<HTMLButtonElement>('[data-tool="pen"]');
-          firstPen?.classList.add('active');
-        }
+      if (tool === 'pen' && targetPenBtn) {
+        this.applyPenButtonConfig(targetPenBtn);
       }
       this.updateSelectionToolbar();
     };
@@ -761,16 +805,21 @@ export class UIManager {
   }
 
   private togglePenPopover(anchorBtn?: HTMLElement) {
-    const existing = this.container.querySelector('.pen-popover');
+    const existing = this.container.querySelector('.pen-settings-popover');
     if (existing) {
       existing.remove();
       return;
     }
+    this.closeAllPopovers();
+
     const isHl = this.input.currentTool === 'highlighter';
     const cfg = isHl ? this.input.highlighterConfig : this.input.penConfig;
+    const targetBtn =
+      (anchorBtn as HTMLButtonElement | undefined) ||
+      this.container.querySelector<HTMLButtonElement>('.pen-tray .tool-btn.active');
 
     const popover = document.createElement('div');
-    popover.className = 'pen-popover';
+    popover.className = 'pen-popover pen-settings-popover';
     popover.innerHTML = `
       <div class="pen-popover-title">
         <span>${isHl ? 'Highlighter' : 'Pen'} Settings</span>
@@ -795,7 +844,7 @@ export class UIManager {
       <!-- Palette -->
       <div class="color-palette">
         ${['#1a202c', '#4a5568', '#2563eb', '#06b6d4', '#dc2626', '#ea580c', '#16a34a', '#8b5cf6', '#ec4899', '#ffd600'].map((c) => `
-          <div class="color-swatch ${cfg.color === c ? 'selected' : ''}" data-c="${c}" style="background: ${c};"></div>
+          <div class="color-swatch ${cfg.color.toLowerCase() === c.toLowerCase() ? 'selected' : ''}" data-c="${c}" style="background: ${c};"></div>
         `).join('')}
         <input type="color" class="custom-color-input" id="pop-custom-color" value="${cfg.color}" title="Custom Color">
       </div>
@@ -806,9 +855,11 @@ export class UIManager {
     const slider = popover.querySelector<HTMLInputElement>('#pop-slider')!;
     const dot = popover.querySelector<HTMLDivElement>('#pop-dot')!;
     const titleVal = popover.querySelector<HTMLSpanElement>('#pop-title-val')!;
+    const customColorInput = popover.querySelector<HTMLInputElement>('#pop-custom-color')!;
 
     const updateSize = (newSize: number) => {
       cfg.size = newSize;
+      this.updatePenButtonSize(targetBtn, newSize);
       slider.value = String(newSize);
       if (titleVal) titleVal.textContent = `${newSize} px`;
       if (dot) {
@@ -835,23 +886,27 @@ export class UIManager {
         const c = sw.dataset.c!;
         cfg.color = c;
         if (dot) dot.style.background = c;
+        if (customColorInput) customColorInput.value = c;
         popover.querySelectorAll('.color-swatch').forEach((s) => s.classList.remove('selected'));
         sw.classList.add('selected');
-        this.updateActivePenIndicatorColor(c);
+        this.updatePenButtonColor(targetBtn, c);
       });
     });
 
-    const customColorInput = popover.querySelector<HTMLInputElement>('#pop-custom-color')!;
     customColorInput.addEventListener('input', (e: any) => {
       const c = e.target.value;
       cfg.color = c;
       if (dot) dot.style.background = c;
       popover.querySelectorAll('.color-swatch').forEach((s) => s.classList.remove('selected'));
-      this.updateActivePenIndicatorColor(c);
+      this.updatePenButtonColor(targetBtn, c);
     });
 
     // Close when clicking outside
     const onOutside = (e: MouseEvent) => {
+      if (!document.body.contains(popover)) {
+        window.removeEventListener('pointerdown', onOutside);
+        return;
+      }
       if (!popover.contains(e.target as Node) && !anchorBtn?.contains(e.target as Node)) {
         popover.remove();
         window.removeEventListener('pointerdown', onOutside);
@@ -860,10 +915,22 @@ export class UIManager {
     setTimeout(() => window.addEventListener('pointerdown', onOutside), 10);
   }
 
-  private updateActivePenIndicatorColor(color: string) {
-    const activeBtn = this.container.querySelector('.pen-tray .tool-btn.active');
-    const indicator = activeBtn?.querySelector<HTMLDivElement>('.pen-indicator');
+  private updatePenButtonColor(btn: HTMLButtonElement | null | undefined, color: string) {
+    const target = btn || this.container.querySelector<HTMLButtonElement>('.pen-tray .tool-btn.active');
+    if (!target) return;
+    if (target.dataset.tool === 'pen' || target.dataset.tool === 'highlighter') {
+      target.dataset.color = color;
+    }
+    const indicator = target.querySelector<HTMLDivElement>('.pen-indicator');
     if (indicator) indicator.style.background = color;
+  }
+
+  private updatePenButtonSize(btn: HTMLButtonElement | null | undefined, size: number) {
+    const target = btn || this.container.querySelector<HTMLButtonElement>('.pen-tray .tool-btn.active');
+    if (!target) return;
+    if (target.dataset.tool === 'pen' || target.dataset.tool === 'highlighter') {
+      target.dataset.size = String(size);
+    }
   }
 
   newBoard() {
@@ -1446,25 +1513,25 @@ export class UIManager {
       <!-- Size Preview & Slider -->
       <div class="size-preview-wrap">
         <div class="size-preview-circle">
-          <div class="size-preview-dot" id="shape-dot" style="width: ${Math.min(26, Math.max(3, this.input.penConfig.size))}px; height: ${Math.min(26, Math.max(3, this.input.penConfig.size))}px; background: ${this.input.penConfig.color};"></div>
+          <div class="size-preview-dot" id="shape-dot" style="width: ${Math.min(26, Math.max(3, this.input.shapeConfig.size))}px; height: ${Math.min(26, Math.max(3, this.input.shapeConfig.size))}px; background: ${this.input.shapeConfig.color};"></div>
         </div>
-        <input type="range" class="pen-size-slider" id="shape-slider" min="1" max="28" step="0.5" value="${this.input.penConfig.size}">
-        <span style="font-size: 12px; min-width: 38px; text-align: right;" id="shape-slider-val">${this.input.penConfig.size} px</span>
+        <input type="range" class="pen-size-slider" id="shape-slider" min="1" max="28" step="0.5" value="${this.input.shapeConfig.size}">
+        <span style="font-size: 12px; min-width: 38px; text-align: right;" id="shape-slider-val">${this.input.shapeConfig.size} px</span>
       </div>
 
       <!-- Presets -->
       <div class="size-presets">
         ${[2, 4, 8, 14].map((s) => `
-          <button class="size-chip ${this.input.penConfig.size === s ? 'selected' : ''}" data-size="${s}">${s}px</button>
+          <button class="size-chip ${this.input.shapeConfig.size === s ? 'selected' : ''}" data-size="${s}">${s}px</button>
         `).join('')}
       </div>
 
       <!-- Palette -->
       <div class="color-palette">
         ${['#1a202c', '#4a5568', '#2563eb', '#06b6d4', '#dc2626', '#ea580c', '#16a34a', '#8b5cf6', '#ec4899', '#ffd600'].map((c) => `
-          <div class="color-swatch ${this.input.penConfig.color === c ? 'selected' : ''}" data-c="${c}" style="background: ${c};"></div>
+          <div class="color-swatch ${this.input.shapeConfig.color.toLowerCase() === c.toLowerCase() ? 'selected' : ''}" data-c="${c}" style="background: ${c};"></div>
         `).join('')}
-        <input type="color" class="custom-color-input" id="shape-custom-color" value="${this.input.penConfig.color}" title="Custom Color">
+        <input type="color" class="custom-color-input" id="shape-custom-color" value="${this.input.shapeConfig.color}" title="Custom Color">
       </div>
     `;
 
@@ -1539,7 +1606,7 @@ export class UIManager {
 
     // Size slider & chips
     const setSize = (sz: number) => {
-      this.input.penConfig.size = sz;
+      this.input.shapeConfig.size = sz;
       slider.value = String(sz);
       sliderVal.textContent = `${sz} px`;
       dot.style.width = `${Math.min(26, Math.max(3, sz))}px`;
@@ -1554,27 +1621,30 @@ export class UIManager {
     });
 
     // Color palette
+    const customColor = popover.querySelector<HTMLInputElement>('#shape-custom-color')!;
     popover.querySelectorAll<HTMLDivElement>('.color-swatch').forEach((sw) => {
       sw.addEventListener('click', () => {
         const c = sw.dataset.c!;
-        this.input.penConfig.color = c;
+        this.input.shapeConfig.color = c;
         dot.style.background = c;
+        if (customColor) customColor.value = c;
         popover.querySelectorAll('.color-swatch').forEach((s) => s.classList.remove('selected'));
         sw.classList.add('selected');
-        this.updateActivePenIndicatorColor(c);
       });
     });
-    const customColor = popover.querySelector<HTMLInputElement>('#shape-custom-color')!;
     customColor.addEventListener('input', (e: any) => {
       const c = e.target.value;
-      this.input.penConfig.color = c;
+      this.input.shapeConfig.color = c;
       dot.style.background = c;
       popover.querySelectorAll('.color-swatch').forEach((s) => s.classList.remove('selected'));
-      this.updateActivePenIndicatorColor(c);
     });
 
     // Close when clicking outside
     const onOutside = (e: MouseEvent) => {
+      if (!document.body.contains(popover)) {
+        window.removeEventListener('pointerdown', onOutside);
+        return;
+      }
       if (!popover.contains(e.target as Node) && !anchorBtn?.contains(e.target as Node)) {
         popover.remove();
         window.removeEventListener('pointerdown', onOutside);

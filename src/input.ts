@@ -26,6 +26,7 @@ export class InputManager {
   currentTool: Tool = 'pen';
   penConfig: PenConfig = { color: '#1a202c', size: 3.5 };
   highlighterConfig: PenConfig = { color: '#ffd600', size: 24 };
+  shapeConfig: PenConfig = { color: '#1a202c', size: 4 };
   eraserBaseSize = 16;
   textConfig = { fontSize: 24, bold: false, italic: false };
 
@@ -401,9 +402,9 @@ export class InputManager {
         w: 1,
         h: 1,
         rot: 0,
-        color: this.penConfig.color,
-        width: Math.max(2, this.penConfig.size),
-        fill: !isLine && this.fillShape ? this.penConfig.color + '33' : null,
+        color: this.shapeConfig.color,
+        width: Math.max(2, this.shapeConfig.size),
+        fill: !isLine && this.fillShape ? this.shapeConfig.color + '33' : null,
         dash: this.shapeLineDash !== 'solid' ? this.shapeLineDash : undefined,
         arrowStart: isLine ? this.shapeArrowStart : undefined,
         arrowEnd: isLine ? this.shapeArrowEnd : undefined,
