@@ -25,7 +25,8 @@ When teaching live, you need instant responsiveness, zero latency, reliable palm
 ## Screenshots
 <img width="1402" height="932" alt="Screen1" src="https://github.com/user-attachments/assets/808948d4-7bb9-4bb5-85c0-bf4fbc227c04" />
 <img width="1402" height="932" alt="Screen2" src="https://github.com/user-attachments/assets/65ce16b2-ed70-4733-8e63-6fce729ca515" />
-<img width="1402" height="932" alt="Screen3" src="https://github.com/user-attachments/assets/d371b3a7-f65c-41a3-9d00-d606347ee4b1" />
+<img width="1402" height="932" alt="Screen3" src="https://github.com/user-attachments/assets/9b08d660-aa2e-4cc6-ab42-3a48f816286c" />
+
 ---
 ## Key Features
 
