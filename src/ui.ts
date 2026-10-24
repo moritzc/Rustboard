@@ -649,6 +649,9 @@ export class UIManager {
             <input type="checkbox" id="chk-minimap" ${this.minimap.visible ? 'checked' : ''}/>
             Show Minimap
           </label>
+          <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+            Displays a detailed live overview of the board. Enabling this may cause slight performance downgrades on very large boards.
+          </div>
         </div>
 
         <div style="margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--panel-border); text-align: center; font-size: 13px; color: var(--text-muted); font-weight: 500;">

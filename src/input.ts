@@ -4,6 +4,7 @@ import { eraseObjectsAt, type EraserState } from './eraser';
 import {
   apply, type BBox, compose, dist, normAngle, pointInPoly, rotateM, rotPt, scaleM, translate,
 } from './geom';
+import { rotateStrokeCache } from './ink';
 import type { Minimap } from './minimap';
 import {
   bboxOf, boxOf, Handle, handlePositions, hitTest, insideBox, insideFrame,
@@ -82,6 +83,7 @@ export class InputManager {
   private activePointers = new Map<number, { x: number; y: number; type: string }>();
   private penDown = false;
   private isPanning = false;
+  private isDraggingMinimap = false;
   private panStart = { x: 0, y: 0 };
 
   // Stroke points [x, y, pressure...]
@@ -89,6 +91,8 @@ export class InputManager {
 
   // Selection interaction
   private dragMode: 'move' | 'resize' | 'rotate' | 'lasso' | null = null;
+  activeTransformIds: Set<string> | null = null;
+  transformSessionId = 0;
   private activeHandle: Handle | null = null;
   private transformStartBox: Box | null = null;
   private transformInitialObjs: Obj[] = [];
@@ -230,6 +234,9 @@ export class InputManager {
 
     // Check if clicking inside Minimap (Idea #7)
     if (this.minimap.isPointInside(e.clientX, e.clientY)) {
+      this.isDraggingMinimap = true;
+      this.minimap.panCameraToScreenPoint(e.clientX, e.clientY, this.camera, window.innerWidth, window.innerHeight);
+      this.onNeedRender();
       return;
     }
 
@@ -529,6 +536,12 @@ export class InputManager {
       return;
     }
 
+    if (this.isDraggingMinimap) {
+      this.minimap.panCameraToScreenPoint(e.clientX, e.clientY, this.camera, window.innerWidth, window.innerHeight);
+      this.onNeedRender();
+      return;
+    }
+
     if (this.isPanning) {
       this.camera.x = e.clientX - this.panStart.x;
       this.camera.y = e.clientY - this.panStart.y;
@@ -603,6 +616,7 @@ export class InputManager {
 
     // End ruler drag modes
     this.rulerMouseMode = null;
+    this.isDraggingMinimap = false;
     if (this.activePointers.size === 0) {
       this.rulerTouchMode = null;
       this.isPanning = false;
@@ -682,6 +696,7 @@ export class InputManager {
         this.activeSelectionBox = null;
       }
       this.dragMode = null;
+      this.activeTransformIds = null;
       this.activeHandle = null;
       this.rotAnchor = null;
       this.frameContainedIds.clear();
@@ -914,6 +929,8 @@ export class InputManager {
           if (rotEntry && dist(wx, wy, rotEntry[1], rotEntry[2]) <= Math.max(tol * 1.5, 18 / this.camera.zoom)) {
             this.activeHandle = 'rot';
             this.dragMode = 'rotate';
+            this.activeTransformIds = new Set(this.selectedIds);
+            this.transformSessionId++;
             this.canvas.style.cursor = 'grabbing';
             this.transformStartBox = { ...currentBox };
             const anchorX = currentBox.x + currentBox.w / 2;
@@ -933,6 +950,8 @@ export class InputManager {
           if (dist(wx, wy, hx, hy) <= tol) {
             this.activeHandle = h;
             this.dragMode = 'resize';
+            this.activeTransformIds = new Set(this.selectedIds);
+            this.transformSessionId++;
             this.transformStartBox = { ...currentBox };
             this.transformInitialObjs = this.scene.objects.map((o) => ({ ...o }));
             this.dragStartWorld = { x: wx, y: wy };
@@ -976,6 +995,8 @@ export class InputManager {
           }
         }
       }
+      this.activeTransformIds = new Set([...this.selectedIds, ...this.frameContainedIds]);
+      this.transformSessionId++;
       this.onNeedRender();
       return;
     }
@@ -1085,7 +1106,9 @@ export class InputManager {
             pts[i] = nx;
             pts[i + 1] = ny;
           }
-          return { ...initObj, pts };
+          const rotatedStroke: StrokeObj = { ...initObj, pts };
+          rotateStrokeCache(initObj, rotatedStroke, anchor.x, anchor.y, dAngle);
+          return rotatedStroke;
         }
 
         // 2. Line / Arrow shapes: rotate line endpoints around anchor

@@ -135,3 +135,40 @@ export function strokeGeometry(s: StrokeObj, smoothingMode: InkingSmoothing = 'b
   }
   return g;
 }
+
+export function translateStrokeCache(oldStroke: StrokeObj, newStroke: StrokeObj, dx: number, dy: number) {
+  const g = cache.get(oldStroke);
+  if (!g || g.ptsLen !== newStroke.pts.length || g.size !== newStroke.size) return;
+  const path = new Path2D();
+  path.addPath(g.path, new DOMMatrix([1, 0, 0, 1, dx, dy]));
+  const outline = g.outline.map((pt) => [pt[0] + dx, pt[1] + dy]);
+  cache.set(newStroke, {
+    ptsLen: newStroke.pts.length,
+    size: newStroke.size,
+    smoothingMode: g.smoothingMode,
+    outline,
+    path,
+  });
+}
+
+export function rotateStrokeCache(oldStroke: StrokeObj, newStroke: StrokeObj, cx: number, cy: number, dAngle: number) {
+  const g = cache.get(oldStroke);
+  if (!g || g.ptsLen !== newStroke.pts.length || g.size !== newStroke.size) return;
+  const cos = Math.cos(dAngle);
+  const sin = Math.sin(dAngle);
+  const tx = cx - cx * cos + cy * sin;
+  const ty = cy - cx * sin - cy * cos;
+  const path = new Path2D();
+  path.addPath(g.path, new DOMMatrix([cos, sin, -sin, cos, tx, ty]));
+  const outline = g.outline.map((pt) => [
+    pt[0] * cos - pt[1] * sin + tx,
+    pt[0] * sin + pt[1] * cos + ty,
+  ]);
+  cache.set(newStroke, {
+    ptsLen: newStroke.pts.length,
+    size: newStroke.size,
+    smoothingMode: g.smoothingMode,
+    outline,
+    path,
+  });
+}

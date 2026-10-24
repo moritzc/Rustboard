@@ -1,6 +1,7 @@
 import {
   type BBox, type Mat, apply, bboxOfPoints, distToSeg, normAngle, pointInPoly, rotPt,
 } from './geom';
+import { translateStrokeCache } from './ink';
 import { layoutText } from './textlayout';
 import type { Box, BoxObj, Obj, ShapeObj, StrokeObj, TextObj } from './types';
 import { isPtsShape } from './types';
@@ -191,16 +192,23 @@ export function transformObj(o: Obj, M: Mat, t: TransformInfo): Obj {
 }
 
 export function translateObj(o: Obj, dx: number, dy: number): Obj {
+  const oldBBox = bboxCache.get(o);
+  let moved: Obj;
   if (o.type === 'stroke') {
     const pts = o.pts.slice();
     for (let i = 0; i < pts.length; i += 3) { pts[i] += dx; pts[i + 1] += dy; }
-    return { ...o, pts };
-  }
-  if (isPtsShape(o)) {
+    moved = { ...o, pts };
+    translateStrokeCache(o, moved, dx, dy);
+  } else if (isPtsShape(o)) {
     const pts = o.pts!.map((v, i) => v + (i % 2 ? dy : dx));
-    return { ...o, pts };
+    moved = { ...o, pts };
+  } else {
+    moved = { ...o, x: o.x + dx, y: o.y + dy } as Obj;
   }
-  return { ...o, x: o.x + dx, y: o.y + dy } as Obj;
+  if (oldBBox) {
+    bboxCache.set(moved, [oldBBox[0] + dx, oldBBox[1] + dy, oldBBox[2] + dx, oldBBox[3] + dy]);
+  }
+  return moved;
 }
 
 /** Objects that ink erasers can affect */

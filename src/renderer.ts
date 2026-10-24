@@ -24,6 +24,10 @@ export class Renderer {
   private sceneCanvas: HTMLCanvasElement | null = null;
   private sceneCtx: CanvasRenderingContext2D | null = null;
   private sceneCacheKey = '';
+  private cachedCamX = 0;
+  private cachedCamY = 0;
+  private cachedPadX = 0;
+  private cachedPadY = 0;
 
   invalidateCache() {
     this.sceneCacheKey = '';
@@ -54,6 +58,8 @@ export class Renderer {
     activeSelectionBox?: Box | null,
     sceneVersion?: number,
     assetsVersion?: number,
+    activeTransformIds?: Set<string> | null,
+    transformSessionId?: number,
   ) {
     const dpr = window.devicePixelRatio || 1;
     const canvasW = ctx.canvas.width;
@@ -61,21 +67,37 @@ export class Renderer {
     const cssW = canvasW / dpr;
     const cssH = canvasH / dpr;
 
-    // Cache key for the static committed scene
+    // Overscan padding in CSS pixels so camera panning/wiggling reuses the cached bitmap
+    const padX = Math.round(cssW * 0.4);
+    const padY = Math.round(cssH * 0.4);
+    const bufCssW = cssW + padX * 2;
+    const bufCssH = cssH + padY * 2;
+    const bufW = Math.round(bufCssW * dpr);
+    const bufH = Math.round(bufCssH * dpr);
+
     const sVer = sceneVersion ?? 0;
     const aVer = assetsVersion ?? 0;
     const smoothingMode = settings.smoothing || 'balanced';
-    const cacheKey = `${canvasW}x${canvasH}_${camera.x.toFixed(1)}_${camera.y.toFixed(1)}_${camera.zoom.toFixed(4)}_${settings.dark}_${settings.pattern}_${smoothingMode}_sv${sVer}_av${aVer}`;
+    const hasActiveTransform = !!(activeTransformIds && activeTransformIds.size > 0);
+    const versionTag = hasActiveTransform ? `tx${transformSessionId ?? 0}` : `sv${sVer}`;
+    const baseCacheKey = `${bufW}x${bufH}_${camera.zoom.toFixed(4)}_${settings.dark}_${smoothingMode}_${versionTag}_av${aVer}`;
 
-    const canUseCache = this.sceneCacheKey === cacheKey && this.sceneCanvas !== null;
+    const withinOverscan =
+      Math.abs(camera.x - this.cachedCamX) <= this.cachedPadX &&
+      Math.abs(camera.y - this.cachedCamY) <= this.cachedPadY;
+
+    const canUseCache =
+      this.sceneCacheKey === baseCacheKey &&
+      this.sceneCanvas !== null &&
+      withinOverscan;
 
     if (!canUseCache) {
       if (!this.sceneCanvas) {
         this.sceneCanvas = document.createElement('canvas');
       }
-      if (this.sceneCanvas.width !== canvasW || this.sceneCanvas.height !== canvasH) {
-        this.sceneCanvas.width = canvasW;
-        this.sceneCanvas.height = canvasH;
+      if (this.sceneCanvas.width !== bufW || this.sceneCanvas.height !== bufH) {
+        this.sceneCanvas.width = bufW;
+        this.sceneCanvas.height = bufH;
         this.sceneCtx = this.sceneCanvas.getContext('2d');
       }
       if (!this.sceneCtx) {
@@ -84,75 +106,72 @@ export class Renderer {
 
       const sCtx = this.sceneCtx!;
       sCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      sCtx.clearRect(0, 0, cssW, cssH);
+      sCtx.clearRect(0, 0, bufCssW, bufCssH);
 
-      // 1. Background
-      this.renderBackground(sCtx, camera, settings, cssW, cssH);
-
-      // 2. Camera Transform for World Objects
       sCtx.save();
-      sCtx.translate(camera.x, camera.y);
+      sCtx.translate(camera.x + padX, camera.y + padY);
       sCtx.scale(camera.zoom, camera.zoom);
 
-      // Visible viewport in world coordinates
+      // Visible viewport in world coordinates (including overscan margin)
+      const vLeft = (-camera.x - padX) / camera.zoom;
+      const vTop = (-camera.y - padY) / camera.zoom;
+      const vRight = (cssW + padX - camera.x) / camera.zoom;
+      const vBottom = (cssH + padY - camera.y) / camera.zoom;
+      const viewBBox: BBox = [vLeft - 80, vTop - 80, vRight + 80, vBottom + 80];
+
+      this.renderLayerObjects(
+        sCtx,
+        objects,
+        viewBBox,
+        camera.zoom,
+        settings.dark,
+        assets,
+        smoothingMode,
+        hasActiveTransform ? activeTransformIds! : null,
+        false,
+      );
+
+      sCtx.restore();
+      this.sceneCacheKey = baseCacheKey;
+      this.cachedCamX = camera.x;
+      this.cachedCamY = camera.y;
+      this.cachedPadX = padX;
+      this.cachedPadY = padY;
+    }
+
+    // 1. Render background directly to screen
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.renderBackground(ctx, camera, settings, cssW, cssH);
+
+    // 2. Blit the pre-rendered overscan scene buffer at the current camera offset
+    const shiftX = camera.x - this.cachedCamX - this.cachedPadX;
+    const shiftY = camera.y - this.cachedCamY - this.cachedPadY;
+    ctx.drawImage(this.sceneCanvas!, shiftX, shiftY, bufCssW, bufCssH);
+
+    // 3. Render dynamic overlays with camera transform
+    ctx.save();
+    ctx.translate(camera.x, camera.y);
+    ctx.scale(camera.zoom, camera.zoom);
+
+    // 3a. Actively moving / rotating / resizing selection objects
+    if (hasActiveTransform) {
       const vLeft = -camera.x / camera.zoom;
       const vTop = -camera.y / camera.zoom;
       const vRight = (cssW - camera.x) / camera.zoom;
       const vBottom = (cssH - camera.y) / camera.zoom;
-      const viewBBox: BBox = [vLeft - 80, vTop - 80, vRight + 80, vBottom + 80];
-
-      // Partition objects into layers for clean rendering with viewport culling
-      const frames: FrameObj[] = [];
-      const pdfPages: PdfPageObj[] = [];
-      const images: ImageObj[] = [];
-      const highlighters: StrokeObj[] = [];
-      const others: Obj[] = [];
-
-      for (const o of objects) {
-        if (!bboxIntersects(bboxOf(o), viewBBox)) continue;
-        if (o.type === 'frame') frames.push(o);
-        else if (o.type === 'pdfpage') pdfPages.push(o);
-        else if (o.type === 'image') images.push(o);
-        else if (o.type === 'stroke' && o.highlighter) highlighters.push(o);
-        else others.push(o);
-      }
-
-      // 2a. Frames (background page containers)
-      for (const f of frames) this.renderFrame(sCtx, f, camera.zoom, settings.dark);
-
-      // 2b. PDF Pages
-      for (const p of pdfPages) this.renderPdfPage(sCtx, p, assets, camera.zoom);
-
-      // 2c. Images
-      for (const im of images) this.renderImage(sCtx, im, assets);
-
-      // 2d. Highlighters (drawn under normal ink with opacity)
-      if (highlighters.length > 0) {
-        sCtx.save();
-        sCtx.globalAlpha = 0.42;
-        for (const hl of highlighters) this.renderStroke(sCtx, hl, smoothingMode);
-        sCtx.restore();
-      }
-
-      // 2e. Regular Ink & Objects (shapes, stickies, text, normal ink)
-      for (const o of others) {
-        this.renderObject(sCtx, o, assets, camera.zoom, smoothingMode);
-      }
-
-      sCtx.restore(); // Exit camera world transform
-      this.sceneCacheKey = cacheKey;
+      const screenBBox: BBox = [vLeft - 80, vTop - 80, vRight + 80, vBottom + 80];
+      this.renderLayerObjects(
+        ctx,
+        objects,
+        screenBBox,
+        camera.zoom,
+        settings.dark,
+        assets,
+        smoothingMode,
+        activeTransformIds!,
+        true,
+      );
     }
-
-    ctx.save();
-    // Blit the pre-rendered scene buffer directly to the screen (1:1 physical pixels)
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.drawImage(this.sceneCanvas!, 0, 0);
-    ctx.restore();
-
-    // Now render dynamic overlays with camera transform
-    ctx.save();
-    ctx.translate(camera.x, camera.y);
-    ctx.scale(camera.zoom, camera.zoom);
 
     // 2f. Active interactive draft (in-progress stroke, shape, or frame)
     if (activeDraft) {
@@ -222,7 +241,53 @@ export class Renderer {
     // 3. Screen overlays (Ruler, Radial menu, Minimap)
     ruler.render(ctx);
     radial.render(ctx);
-    minimap.render(ctx, camera, objects, cssW, cssH, settings.dark);
+    minimap.render(ctx, camera, objects, cssW, cssH, settings.dark, assets, sVer);
+  }
+
+  private renderLayerObjects(
+    sCtx: CanvasRenderingContext2D,
+    objects: Obj[],
+    viewBBox: BBox,
+    zoom: number,
+    dark: boolean,
+    assets: Assets,
+    smoothingMode: InkingSmoothing,
+    filterIds: Set<string> | null,
+    includeMatching: boolean,
+  ) {
+    const frames: FrameObj[] = [];
+    const pdfPages: PdfPageObj[] = [];
+    const images: ImageObj[] = [];
+    const highlighters: StrokeObj[] = [];
+    const others: Obj[] = [];
+
+    for (const o of objects) {
+      if (filterIds) {
+        const has = filterIds.has(o.id);
+        if (includeMatching ? !has : has) continue;
+      }
+      if (!bboxIntersects(bboxOf(o), viewBBox)) continue;
+      if (o.type === 'frame') frames.push(o);
+      else if (o.type === 'pdfpage') pdfPages.push(o);
+      else if (o.type === 'image') images.push(o);
+      else if (o.type === 'stroke' && o.highlighter) highlighters.push(o);
+      else others.push(o);
+    }
+
+    for (const f of frames) this.renderFrame(sCtx, f, zoom, dark);
+    for (const p of pdfPages) this.renderPdfPage(sCtx, p, assets, zoom);
+    for (const im of images) this.renderImage(sCtx, im, assets);
+
+    if (highlighters.length > 0) {
+      sCtx.save();
+      sCtx.globalAlpha = 0.42;
+      for (const hl of highlighters) this.renderStroke(sCtx, hl, smoothingMode);
+      sCtx.restore();
+    }
+
+    for (const o of others) {
+      this.renderObject(sCtx, o, assets, zoom, smoothingMode);
+    }
   }
 
   private renderBackground(
@@ -242,8 +307,8 @@ export class Renderer {
     const spacing = baseSpacing * cam.zoom;
     if (spacing < 10) return; // Too dense to render
 
-    const offsetX = cam.x % spacing;
-    const offsetY = cam.y % spacing;
+    const offsetX = ((cam.x % spacing) + spacing) % spacing;
+    const offsetY = ((cam.y % spacing) + spacing) % spacing;
 
     ctx.save();
     const patternColor = settings.dark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.12)';
@@ -252,14 +317,26 @@ export class Renderer {
 
     if (settings.pattern === 'dots') {
       const r = Math.max(1, 1.2 * Math.min(2, cam.zoom));
-      ctx.beginPath();
-      for (let x = offsetX; x < w; x += spacing) {
+      if (r <= 1.6) {
+        // Fast GPU quad batching instead of thousands of bezier arc() subpaths
+        const d = r * 1.85;
         for (let y = offsetY; y < h; y += spacing) {
-          ctx.moveTo(x + r, y);
-          ctx.arc(x, y, r, 0, Math.PI * 2);
+          const py = y - r * 0.92;
+          for (let x = offsetX; x < w; x += spacing) {
+            ctx.fillRect(x - r * 0.92, py, d, d);
+          }
+        }
+      } else {
+        // Flush path per row when zoomed in so path tessellator stays tiny
+        for (let y = offsetY; y < h; y += spacing) {
+          ctx.beginPath();
+          for (let x = offsetX; x < w; x += spacing) {
+            ctx.moveTo(x + r, y);
+            ctx.arc(x, y, r, 0, Math.PI * 2);
+          }
+          ctx.fill();
         }
       }
-      ctx.fill();
     } else if (settings.pattern === 'grid') {
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -321,13 +398,14 @@ export class Renderer {
       ctx.translate(-p.w / 2, -p.h / 2);
     }
 
-    // Shadow
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.15)';
-    ctx.shadowBlur = 10;
-    ctx.shadowOffsetY = 3;
+    // Fast crisp layered shadow (avoids expensive per-frame Gaussian shadowBlur)
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.09)';
+    ctx.fillRect(3 / zoom, 4 / zoom, p.w, p.h);
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, p.w, p.h);
-    ctx.shadowColor = 'transparent';
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.12)';
+    ctx.lineWidth = 1 / zoom;
+    ctx.strokeRect(0, 0, p.w, p.h);
 
     const wantScale = Math.max(1, zoom * (p.w / (p.pw * PT)));
     const entry = assets.pageBitmap(p.asset, p.page, wantScale);
@@ -464,16 +542,16 @@ export class Renderer {
     if (st.rot) ctx.rotate(st.rot);
     ctx.translate(-st.w / 2, -st.h / 2);
 
-    // Drop shadow
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.18)';
-    ctx.shadowBlur = 8;
-    ctx.shadowOffsetY = 3;
+    // Fast layered drop shadow (avoids expensive per-frame Gaussian shadowBlur)
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.12)';
+    ctx.beginPath();
+    ctx.roundRect(2.5, 3.5, st.w, st.h, 4);
+    ctx.fill();
 
     ctx.fillStyle = st.color;
     ctx.beginPath();
     ctx.roundRect(0, 0, st.w, st.h, 4);
     ctx.fill();
-    ctx.shadowColor = 'transparent';
 
     // Text inside sticky note
     ctx.fillStyle = '#1a202c';

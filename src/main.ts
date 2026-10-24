@@ -118,6 +118,8 @@ async function bootstrap() {
         input.activeSelectionBox,
         scene.version,
         assets.version,
+        input.activeTransformIds,
+        input.transformSessionId,
       );
       if (Math.abs(camera.zoom - lastZoom) > 0.001) {
         lastZoom = camera.zoom;
