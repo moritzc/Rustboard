@@ -44,3 +44,6 @@ pnpm-debug.log*
 Thumbs.db
 ehthumbs.db
 desktop.ini
+
+# Microsoft Store packaging
+/ms-store/

@@ -1,6 +1,6 @@
 import type { Assets } from './assets';
 import { bboxOf } from './objects';
-import type { Camera, Obj } from './types';
+import type { Camera, DockPosition, Obj } from './types';
 
 export class Minimap {
   visible = false;
@@ -36,13 +36,22 @@ export class Minimap {
     dark: boolean,
     assets?: Assets,
     sceneVersion = 0,
+    dockPosition: DockPosition = 'bottom',
   ) {
     if (!this.visible) return;
 
     this.w = 220;
     this.h = 144;
-    this.x = canvasW - this.w - 18;
-    this.y = canvasH - this.h - 90;
+    if (dockPosition === 'right') {
+      this.x = 18;
+      this.y = canvasH - this.h - 80;
+    } else if (dockPosition === 'bottom') {
+      this.x = canvasW - this.w - 18;
+      this.y = canvasH - this.h - 86;
+    } else {
+      this.x = canvasW - this.w - 18;
+      this.y = canvasH - this.h - 80;
+    }
 
     // 1. Update cached object union bounds only when sceneVersion changes
     if (this.lastSceneVersion !== sceneVersion) {

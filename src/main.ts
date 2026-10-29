@@ -7,18 +7,24 @@ import { RadialMenu } from './radial_menu';
 import { Renderer } from './renderer';
 import { Ruler } from './ruler';
 import { Scene } from './scene';
-import type { BoardSettings, Camera } from './types';
+import type { BoardSettings, Camera, DockPosition } from './types';
 import { UIManager } from './ui';
 
 async function bootstrap() {
   const canvas = document.getElementById('main') as HTMLCanvasElement;
   const ctx = canvas.getContext('2d', { desynchronized: true })!;
+  const overlayCanvas = document.getElementById('overlay') as HTMLCanvasElement;
+  const overlayCtx = overlayCanvas.getContext('2d')!;
   const uiContainer = document.getElementById('ui') as HTMLElement;
 
+  const savedDock = (localStorage.getItem('rustboard_dock_position') as DockPosition) || 'bottom';
+  const savedScreenShare = localStorage.getItem('rustboard_screen_share') === '1';
   const settings: BoardSettings = {
     pattern: 'dots',
     dark: false,
     smoothing: 'balanced',
+    dockPosition: savedDock,
+    screenShareMode: savedScreenShare,
   };
 
   const camera: Camera = {
@@ -75,9 +81,10 @@ async function bootstrap() {
     requestRender,
   );
 
-  // Resize canvas according to device pixel ratio
+  // Resize canvas according to device pixel ratio (capped in Screen Sharing Mode to reduce GPU bandwidth)
   function resizeCanvas() {
-    const dpr = window.devicePixelRatio || 1;
+    const rawDpr = window.devicePixelRatio || 1;
+    const dpr = settings.screenShareMode ? Math.min(rawDpr, 1.25) : rawDpr;
     const w = window.innerWidth;
     const h = window.innerHeight;
     canvas.width = Math.round(w * dpr);
@@ -85,6 +92,13 @@ async function bootstrap() {
     canvas.style.width = `${w}px`;
     canvas.style.height = `${h}px`;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    overlayCanvas.width = Math.round(w * dpr);
+    overlayCanvas.height = Math.round(h * dpr);
+    overlayCanvas.style.width = `${w}px`;
+    overlayCanvas.style.height = `${h}px`;
+    overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
     renderer.invalidateCache();
     requestRender();
   }
@@ -120,6 +134,7 @@ async function bootstrap() {
         assets.version,
         input.activeTransformIds,
         input.transformSessionId,
+        overlayCtx,
       );
       if (Math.abs(camera.zoom - lastZoom) > 0.001) {
         lastZoom = camera.zoom;
@@ -139,6 +154,8 @@ async function bootstrap() {
         Object.assign(camera, res.camera);
         Object.assign(settings, res.settings);
         document.body.classList.toggle('dark', settings.dark);
+        ui.applyDockPosition();
+        ui.applyScreenShareMode();
         requestRender();
       } else if (startupFile.toLowerCase().endsWith('.pdf')) {
         const bytes = await invoke<number[]>('read_file', { path: startupFile });
@@ -156,6 +173,8 @@ async function bootstrap() {
               Object.assign(camera, res.camera);
               Object.assign(settings, res.settings);
               document.body.classList.toggle('dark', settings.dark);
+              ui.applyDockPosition();
+              ui.applyScreenShareMode();
               requestRender();
             } catch {
               /* recovery failed, start fresh */

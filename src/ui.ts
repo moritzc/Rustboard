@@ -8,7 +8,7 @@ import type { Minimap } from './minimap';
 import { bboxOf, selectionFrame, textHeight } from './objects';
 import type { Ruler } from './ruler';
 import type { Scene } from './scene';
-import type { BoardSettings, Camera, FrameObj, LineDash, ShapeKind, ShapeTool, TextObj, Tool } from './types';
+import type { BoardSettings, Camera, DockPosition, FrameObj, LineDash, ShapeKind, ShapeTool, TextObj, Tool } from './types';
 import { uid } from './types';
 import { layoutText } from './textlayout';
 
@@ -172,7 +172,31 @@ export class UIManager {
     `;
 
     this.bindUIEvents();
+    this.applyDockPosition();
+    this.applyScreenShareMode();
     this.updateZoomDisplay();
+  }
+
+  applyDockPosition() {
+    const pos: DockPosition = this.settings.dockPosition || 'bottom';
+    this.container.classList.remove('dock-bottom', 'dock-top', 'dock-left', 'dock-right');
+    this.container.classList.add(`dock-${pos}`);
+    try {
+      localStorage.setItem('rustboard_dock_position', pos);
+    } catch {
+      /* ignore storage errors */
+    }
+  }
+
+  applyScreenShareMode() {
+    const enabled = !!this.settings.screenShareMode;
+    document.body.classList.toggle('screen-share-mode', enabled);
+    try {
+      localStorage.setItem('rustboard_screen_share', enabled ? '1' : '0');
+    } catch {
+      /* ignore storage errors */
+    }
+    window.dispatchEvent(new Event('resize'));
   }
 
   private applyPenButtonConfig(btn: HTMLButtonElement) {
@@ -466,6 +490,8 @@ export class UIManager {
       Object.assign(this.camera, res.camera);
       Object.assign(this.settings, res.settings);
       document.body.classList.toggle('dark', this.settings.dark);
+      this.applyDockPosition();
+      this.applyScreenShareMode();
       this.updateZoomDisplay();
       this.onNeedRender();
     }
@@ -632,6 +658,16 @@ export class UIManager {
         </div>
 
         <div class="option-group">
+          <div class="option-label">Menu / Dock Position</div>
+          <div class="pill-row">
+            <div class="pill ${(!this.settings.dockPosition || this.settings.dockPosition === 'bottom') ? 'selected' : ''}" data-dock="bottom">Bottom</div>
+            <div class="pill ${this.settings.dockPosition === 'top' ? 'selected' : ''}" data-dock="top">Top</div>
+            <div class="pill ${this.settings.dockPosition === 'left' ? 'selected' : ''}" data-dock="left">Left</div>
+            <div class="pill ${this.settings.dockPosition === 'right' ? 'selected' : ''}" data-dock="right">Right</div>
+          </div>
+        </div>
+
+        <div class="option-group">
           <div class="option-label">Inking Smoothing & Stabilization</div>
           <div class="pill-row">
             <div class="pill ${(!this.settings.smoothing || this.settings.smoothing === 'balanced') ? 'selected' : ''}" data-smooth="balanced">Balanced</div>
@@ -651,6 +687,14 @@ export class UIManager {
           </label>
           <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
             Displays a detailed live overview of the board. Enabling this may cause slight performance downgrades on very large boards.
+          </div>
+
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; margin-top: 12px;">
+            <input type="checkbox" id="chk-screenshare" ${this.settings.screenShareMode ? 'checked' : ''}/>
+            Screen Sharing Mode (Teams / Zoom)
+          </label>
+          <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+            Isolates live pen strokes onto a dirty-rect overlay, disables GPU blur shaders, and caps HiDPI resolution for smooth streaming on integrated graphics.
           </div>
         </div>
 
@@ -683,6 +727,17 @@ export class UIManager {
       });
     });
 
+    modal.querySelectorAll<HTMLDivElement>('[data-dock]').forEach((p) => {
+      p.addEventListener('click', () => {
+        this.settings.dockPosition = p.dataset.dock as DockPosition;
+        modal.querySelectorAll('[data-dock]').forEach((x) => x.classList.remove('selected'));
+        p.classList.add('selected');
+        this.closeAllPopovers();
+        this.applyDockPosition();
+        this.onNeedRender();
+      });
+    });
+
     modal.querySelector('#th-light')?.addEventListener('click', () => {
       this.settings.dark = false;
       document.body.classList.remove('dark');
@@ -698,6 +753,12 @@ export class UIManager {
 
     modal.querySelector('#chk-minimap')?.addEventListener('change', (e: any) => {
       this.minimap.visible = e.target.checked;
+      this.onNeedRender();
+    });
+
+    modal.querySelector('#chk-screenshare')?.addEventListener('change', (e: any) => {
+      this.settings.screenShareMode = !!e.target.checked;
+      this.applyScreenShareMode();
       this.onNeedRender();
     });
   }

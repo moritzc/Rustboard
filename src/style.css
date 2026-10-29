@@ -54,6 +54,34 @@ html, body, #app {
   display: none;
 }
 
+body.screen-share-mode {
+  --panel-bg: rgba(255, 255, 255, 0.97);
+}
+
+body.dark.screen-share-mode {
+  --panel-bg: rgba(30, 41, 59, 0.97);
+}
+
+body.screen-share-mode #overlay {
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 2;
+  pointer-events: none;
+}
+
+body.screen-share-mode .floating-panel,
+body.screen-share-mode .pen-popover,
+body.screen-share-mode .inline-text-toolbar,
+body.screen-share-mode .modal-overlay,
+body.screen-share-mode .modal-box {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
 #ui {
   position: absolute;
   top: 0;
@@ -78,13 +106,89 @@ html, body, #app {
   padding: 6px 10px;
 }
 
-/* Bottom centered pen tray */
-.pen-tray {
+/* Pen tray (dock) - default bottom centered */
+.pen-tray,
+#ui.dock-bottom .pen-tray {
   position: absolute;
   bottom: 24px;
+  top: auto;
+  right: auto;
   left: 50%;
   transform: translateX(-50%);
   height: 54px;
+  flex-direction: row;
+}
+
+#ui.dock-top .pen-tray {
+  position: absolute;
+  top: 18px;
+  bottom: auto;
+  right: auto;
+  left: 50%;
+  transform: translateX(-50%);
+  height: 54px;
+  flex-direction: row;
+}
+
+#ui.dock-left .pen-tray {
+  position: absolute;
+  left: 18px;
+  right: auto;
+  bottom: auto;
+  top: calc(50% + 24px);
+  transform: translateY(-50%);
+  flex-direction: column;
+  width: 54px;
+  height: auto;
+  padding: 10px 6px;
+}
+
+#ui.dock-right .pen-tray {
+  position: absolute;
+  right: 18px;
+  left: auto;
+  bottom: auto;
+  top: calc(50% + 24px);
+  transform: translateY(-50%);
+  flex-direction: column;
+  width: 54px;
+  height: auto;
+  padding: 10px 6px;
+}
+
+#ui.dock-left .pen-tray .divider,
+#ui.dock-right .pen-tray .divider {
+  width: 28px;
+  height: 1px;
+  margin: 4px 0;
+}
+
+@media (max-width: 1560px) {
+  #ui.dock-top .pen-tray {
+    top: 72px;
+  }
+}
+
+@media (max-height: 860px) {
+  #ui.dock-left .pen-tray,
+  #ui.dock-right .pen-tray {
+    top: 72px;
+    transform: none;
+    gap: 3px;
+    padding: 6px;
+    width: 48px;
+  }
+
+  #ui.dock-left .pen-tray .tool-btn,
+  #ui.dock-right .pen-tray .tool-btn {
+    width: 36px;
+    height: 36px;
+  }
+
+  #ui.dock-left .pen-tray .divider,
+  #ui.dock-right .pen-tray .divider {
+    margin: 2px 0;
+  }
 }
 
 .tool-btn {
@@ -161,11 +265,36 @@ html, body, #app {
   height: 46px;
 }
 
-/* Bottom right zoom & nav */
-.zoom-controls {
+/* Zoom & scaling widget - dynamic position based on dock position */
+.zoom-controls,
+#ui.dock-bottom .zoom-controls {
+  position: absolute;
+  top: 18px;
+  bottom: auto;
+  left: auto;
+  right: 188px;
+  transform: none;
+  height: 46px;
+}
+
+#ui.dock-top .zoom-controls,
+#ui.dock-left .zoom-controls {
   position: absolute;
   bottom: 24px;
+  top: auto;
+  left: auto;
   right: 18px;
+  transform: none;
+  height: 44px;
+}
+
+#ui.dock-right .zoom-controls {
+  position: absolute;
+  bottom: 24px;
+  top: auto;
+  right: auto;
+  left: 18px;
+  transform: none;
   height: 44px;
 }
 
@@ -290,7 +419,7 @@ html, body, #app {
   border-color: var(--accent);
 }
 
-/* Pen customization popover floating right above pen tray */
+/* Pen customization popover floating adjacent to pen tray */
 .pen-popover {
   position: absolute;
   bottom: 86px;
@@ -313,9 +442,45 @@ html, body, #app {
   animation: fadeInPop 0.15s ease-out;
 }
 
+#ui.dock-top .pen-popover {
+  bottom: auto;
+  top: 82px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+@media (max-width: 1560px) {
+  #ui.dock-top .pen-popover {
+    top: 136px;
+  }
+}
+
+#ui.dock-left .pen-popover {
+  bottom: auto;
+  left: 82px;
+  right: auto;
+  top: 50%;
+  transform: translateY(-50%);
+  animation: fadeInPopSide 0.15s ease-out;
+}
+
+#ui.dock-right .pen-popover {
+  bottom: auto;
+  left: auto;
+  right: 82px;
+  top: 50%;
+  transform: translateY(-50%);
+  animation: fadeInPopSide 0.15s ease-out;
+}
+
 @keyframes fadeInPop {
   from { opacity: 0; transform: translate(-50%, 8px); }
   to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@keyframes fadeInPopSide {
+  from { opacity: 0; transform: translateY(calc(-50% + 8px)); }
+  to { opacity: 1; transform: translateY(-50%); }
 }
 
 .pen-popover-title {

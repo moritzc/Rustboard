@@ -1381,9 +1381,8 @@ export class InputManager {
     const nw = 'naturalWidth' in img ? img.naturalWidth : img.width;
     const nh = 'naturalHeight' in img ? img.naturalHeight : img.height;
 
-    // Center in current view
-    const vpCenterX = (-this.camera.x + this.canvas.width / 2) / this.camera.zoom;
-    const vpCenterY = (-this.camera.y + this.canvas.height / 2) / this.camera.zoom;
+    // Center in current view (use CSS viewport dimensions, not physical canvas pixel dimensions)
+    const [vpCenterX, vpCenterY] = this.screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
 
     const maxDim = 600;
     const scale = Math.min(1, maxDim / Math.max(nw, nh));
@@ -1412,8 +1411,8 @@ export class InputManager {
     const asset = this.assets.add(bytes, 'application/pdf', name);
     const info = await this.assets.pageInfo(asset.id);
 
-    let curY = (-this.camera.y + 80) / this.camera.zoom;
-    const curX = (-this.camera.x + this.canvas.width / 2) / this.camera.zoom;
+    const [curX, topY] = this.screenToWorld(window.innerWidth / 2, 80);
+    let curY = topY;
     const objs: PdfPageObj[] = [];
 
     // Place pages vertically with neat margin

@@ -18,6 +18,7 @@ export type SelectMode = 'lasso' | 'rect';
 export type FontKey = 'sans' | 'hand' | 'serif' | 'mono';
 export type Pattern = 'none' | 'dots' | 'grid' | 'lines';
 export type InkingSmoothing = 'raw' | 'balanced' | 'smooth';
+export type DockPosition = 'bottom' | 'top' | 'left' | 'right';
 
 interface Base {
   id: string;
@@ -104,6 +105,8 @@ export interface BoardSettings {
   pattern: Pattern;
   dark: boolean;
   smoothing?: InkingSmoothing;
+  dockPosition?: DockPosition;
+  screenShareMode?: boolean;
 }
 
 export interface Camera {

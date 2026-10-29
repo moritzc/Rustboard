@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import type { Assets } from './assets';
 import type { Scene } from './scene';
-import type { BoardSettings, Camera, Obj } from './types';
+import type { BoardSettings, Camera, DockPosition, Obj } from './types';
 
 export interface BoardFile {
   version: 1;
@@ -92,12 +92,16 @@ export async function loadBoard(
   }
 
   scene.reset(boardData.objects || []);
+  const savedDock = (localStorage.getItem('rustboard_dock_position') as DockPosition) || 'bottom';
+  const savedScreenShare = localStorage.getItem('rustboard_screen_share') === '1';
   return {
     camera: boardData.camera || { x: 0, y: 0, zoom: 1 },
     settings: {
       pattern: boardData.settings?.pattern ?? 'dots',
       dark: boardData.settings?.dark ?? false,
       smoothing: boardData.settings?.smoothing ?? 'balanced',
+      dockPosition: boardData.settings?.dockPosition ?? savedDock,
+      screenShareMode: boardData.settings?.screenShareMode ?? savedScreenShare,
     },
   };
 }
