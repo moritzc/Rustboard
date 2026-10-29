@@ -3,6 +3,14 @@
 <div align="center">
   <img src="app-icon.svg" width="128" height="128" alt="Rustboard Logo" />
   <h3>A fast, pen-first digital whiteboard built with Rust and Tauri v2</h3>
+  <p>
+    <a href="https://apps.microsoft.com/detail/9nmxcdt3fl1d">
+      <img src="https://get.microsoft.com/images/en-us%20dark.svg" width="200" alt="Get it from Microsoft" />
+    </a>
+  </p>
+  <p>
+    <a href="https://apps.microsoft.com/detail/9nmxcdt3fl1d"><strong>Download Rustboard on the Microsoft Store</strong></a>
+  </p>
 </div>
 
 ---
@@ -32,6 +40,8 @@ When teaching live, you need instant responsiveness, zero latency, reliable palm
 
 ### 🖊️ Screen-Sharing & Teaching Tools
 - **Pressure-Sensitive Stylus Inking**: Ultra-low-latency ink with smooth tapering powered by `perfect-freehand`.
+- **Screen Sharing Mode**: Dedicated low-bandwidth streaming mode (for Microsoft Teams / Zoom on integrated GPUs like Surface Pro) that isolates live pen strokes onto a dirty-rectangle overlay.
+- **Customizable Dock Position**: Place the main tool dock on the Bottom, Top, Left, or Right edge of the screen.
 - **Laser Pointer**: Cast live glowing pointer trails that automatically fade over time to guide student attention during screen sharing.
 - **Interactive Ruler & Protractor**: On-screen hardware ruler with 1° / 5° precision angle adjustment via mouse wheel or two-finger touch, featuring automatic line snapping along the edge.
 
@@ -86,9 +96,14 @@ When teaching live, you need instant responsiveness, zero latency, reliable palm
 
 ---
 
-## Building from Source
+## Installation & Building from Source
 
-### Prerequisites
+### Microsoft Store (Recommended)
+
+Install **Rustboard** directly from the Microsoft Store with automatic updates:
+- **[Get Rustboard on the Microsoft Store](https://apps.microsoft.com/detail/9nmxcdt3fl1d)**
+
+### Prerequisites (Building from Source)
 
 1. **Node.js** (v18 or newer) & `npm`
 2. **Rust** toolchain (stable `x86_64-pc-windows-msvc` or `x86_64-pc-windows-gnu`)
