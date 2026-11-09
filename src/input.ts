@@ -49,6 +49,7 @@ export class InputManager {
   lassoPoly: number[] | null = null;
   selectedIds = new Set<string>();
   activeSelectionBox: Box | null = null;
+  private pendingAutoLockImageIds = new Set<string>();
   private frameContainedIds = new Set<string>();
   private rotAnchor: { x: number; y: number } | null = null;
   private rotStartPointerAngle = 0;
@@ -180,6 +181,9 @@ export class InputManager {
   }
 
   setTool(tool: Tool) {
+    if (tool === 'pen' || tool === 'highlighter') {
+      this.lockPendingImages();
+    }
     if (this.currentTool !== tool) {
       if (tool !== 'select') {
         this.clearSelection();
@@ -187,6 +191,21 @@ export class InputManager {
       this.currentTool = tool;
       this.onToolChanged?.(tool);
       this.onNeedRender();
+    }
+  }
+
+  private lockPendingImages() {
+    if (this.pendingAutoLockImageIds.size === 0) return;
+    const updates = new Map<string, Obj>();
+    for (const id of this.pendingAutoLockImageIds) {
+      const o = this.scene.get(id);
+      if (o && o.type === 'image' && !o.locked) {
+        updates.set(id, { ...o, locked: true });
+      }
+    }
+    this.pendingAutoLockImageIds.clear();
+    if (updates.size > 0) {
+      this.scene.update(updates);
     }
   }
 
@@ -951,6 +970,12 @@ export class InputManager {
             this.activeHandle = h;
             this.dragMode = 'resize';
             this.activeTransformIds = new Set(this.selectedIds);
+            for (const id of this.selectedIds) {
+              const obj = this.scene.get(id);
+              if (obj && obj.type === 'image') {
+                this.pendingAutoLockImageIds.add(id);
+              }
+            }
             this.transformSessionId++;
             this.transformStartBox = { ...currentBox };
             this.transformInitialObjs = this.scene.objects.map((o) => ({ ...o }));
@@ -1004,6 +1029,7 @@ export class InputManager {
     // 3. Clicked empty space / outside selection:
     if (hadSelection) {
       // Any pen or mouse press OUTSIDE of an existing selection returns to draw/pen mode with the last selected color.
+      this.lockPendingImages();
       this.clearSelection();
       this.frameContainedIds.clear();
       this.currentTool = 'pen';
@@ -1175,6 +1201,27 @@ export class InputManager {
         else y1 = y0 + minDim;
       }
 
+      // True-to-scale (aspect-ratio locked) corner scaling for images and text fields
+      const isCorner = h.length === 2;
+      const lockAspect =
+        isCorner &&
+        this.transformInitialObjs.some(
+          (o) => this.selectedIds.has(o.id) && (o.type === 'image' || o.type === 'text' || o.type === 'pdfpage'),
+        );
+
+      if (lockAspect && b.w > 0 && b.h > 0) {
+        const rawW = x1 - x0;
+        const rawH = y1 - y0;
+        const minScale = minDim / Math.max(1, Math.min(b.w, b.h));
+        const s = Math.max(minScale, (rawW * b.w + rawH * b.h) / (b.w * b.w + b.h * b.h));
+        const lockedW = b.w * s;
+        const lockedH = b.h * s;
+        if (h.includes('w')) x0 = x1 - lockedW;
+        else x1 = x0 + lockedW;
+        if (h.includes('n')) y0 = y1 - lockedH;
+        else y1 = y0 + lockedH;
+      }
+
       const newW = x1 - x0;
       const newH = y1 - y0;
       const sx = newW / b.w;
@@ -1292,7 +1339,13 @@ export class InputManager {
     const updated = new Map<string, Obj>();
     for (const id of this.selectedIds) {
       const o = this.scene.get(id);
-      if (o) updated.set(id, { ...o, locked: !o.locked });
+      if (o) {
+        const nextLocked = !o.locked;
+        updated.set(id, { ...o, locked: nextLocked });
+        if (!nextLocked) {
+          this.pendingAutoLockImageIds.delete(id);
+        }
+      }
     }
     this.scene.update(updated);
     this.onNeedRender();
@@ -1348,15 +1401,19 @@ export class InputManager {
     e.preventDefault();
     const files = e.dataTransfer?.files;
     if (files && files.length > 0) {
+      const imageBatch: { bytes: Uint8Array; mime: string; name: string }[] = [];
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (file.type.startsWith('image/')) {
           const buf = await file.arrayBuffer();
-          await this.insertImageBytes(new Uint8Array(buf), file.type, file.name);
+          imageBatch.push({ bytes: new Uint8Array(buf), mime: file.type, name: file.name });
         } else if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
           const buf = await file.arrayBuffer();
           await this.insertPdfBytes(new Uint8Array(buf), file.name);
         }
+      }
+      if (imageBatch.length > 0) {
+        await this.insertImagesBytes(imageBatch);
       }
       return;
     }
@@ -1376,33 +1433,57 @@ export class InputManager {
   }
 
   async insertImageBytes(bytes: Uint8Array, mime: string, name: string) {
-    const asset = this.assets.add(bytes, mime, name);
-    const img = await this.assets.imageAsync(asset.id);
-    const nw = 'naturalWidth' in img ? img.naturalWidth : img.width;
-    const nh = 'naturalHeight' in img ? img.naturalHeight : img.height;
+    await this.insertImagesBytes([{ bytes, mime, name }]);
+  }
+
+  async insertImagesBytes(items: { bytes: Uint8Array; mime: string; name: string }[]) {
+    if (items.length === 0) return;
 
     // Center in current view (use CSS viewport dimensions, not physical canvas pixel dimensions)
     const [vpCenterX, vpCenterY] = this.screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
-
     const maxDim = 600;
-    const scale = Math.min(1, maxDim / Math.max(nw, nh));
-    const w = nw * scale;
-    const h = nh * scale;
+    const gap = 30;
 
-    const imgObj: ImageObj = {
-      id: uid(),
-      type: 'image',
-      asset: asset.id,
-      x: vpCenterX - w / 2,
-      y: vpCenterY - h / 2,
-      w,
-      h,
-      rot: 0,
-    };
+    const prepared: { assetId: string; w: number; h: number }[] = [];
+    for (const item of items) {
+      const asset = this.assets.add(item.bytes, item.mime, item.name);
+      const img = await this.assets.imageAsync(asset.id);
+      const nw = 'naturalWidth' in img ? img.naturalWidth : img.width;
+      const nh = 'naturalHeight' in img ? img.naturalHeight : img.height;
+      const scale = Math.min(1, maxDim / Math.max(nw, nh));
+      prepared.push({
+        assetId: asset.id,
+        w: nw * scale,
+        h: nh * scale,
+      });
+    }
 
-    this.scene.add([imgObj]);
+    let curY = vpCenterY - prepared[0].h / 2;
+    const imgObjs: ImageObj[] = [];
+
+    for (const p of prepared) {
+      const imgObj: ImageObj = {
+        id: uid(),
+        type: 'image',
+        asset: p.assetId,
+        x: vpCenterX - p.w / 2,
+        y: curY,
+        w: p.w,
+        h: p.h,
+        rot: 0,
+      };
+      imgObjs.push(imgObj);
+      this.pendingAutoLockImageIds.add(imgObj.id);
+      curY += p.h + gap;
+    }
+
+    this.scene.add(imgObjs);
+    this.setTool('select');
     this.selectedIds.clear();
-    this.selectedIds.add(imgObj.id);
+    for (const imgObj of imgObjs) {
+      this.selectedIds.add(imgObj.id);
+    }
+    this.activeSelectionBox = null;
     this.onSelectionChanged(this.selectedIds);
     this.onNeedRender();
   }

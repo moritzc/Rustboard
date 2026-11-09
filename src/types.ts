@@ -101,6 +101,24 @@ export interface FrameObj extends Base, Box {
 export type Obj = StrokeObj | ShapeObj | TextObj | StickyObj | ImageObj | PdfPageObj | FrameObj;
 export type BoxObj = Exclude<Obj, StrokeObj>;
 
+export interface PenSlotPref {
+  color: string;
+  size: number;
+}
+
+export interface TaskbarPrefs {
+  dockPosition: DockPosition;
+  pens: PenSlotPref[];
+  activePenIndex: number;
+  highlighter: PenSlotPref;
+  eraserBaseSize: number;
+  shapeColor: string;
+  shapeSize: number;
+  dark?: boolean;
+  pattern?: Pattern;
+  smoothing?: InkingSmoothing;
+}
+
 export interface BoardSettings {
   pattern: Pattern;
   dark: boolean;

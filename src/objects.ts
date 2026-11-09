@@ -2,7 +2,7 @@ import {
   type BBox, type Mat, apply, bboxOfPoints, distToSeg, normAngle, pointInPoly, rotPt,
 } from './geom';
 import { translateStrokeCache } from './ink';
-import { layoutText } from './textlayout';
+import { layoutText, measureLinesWidth } from './textlayout';
 import type { Box, BoxObj, Obj, ShapeObj, StrokeObj, TextObj } from './types';
 import { isPtsShape } from './types';
 
@@ -177,10 +177,16 @@ export function transformObj(o: Obj, M: Mat, t: TransformInfo): Obj {
     fx = Math.abs(fx);
     fy = Math.abs(fy);
     if (o.type === 'text') {
-      const fs = Math.max(4, o.fontSize * (fx !== 1 && fy !== 1 ? fy : fy));
+      const isUniform = approx(fx, fy);
+      const fs = Math.max(4, o.fontSize * fy);
       w = Math.max(20, w * fx);
+      if (isUniform) {
+        const initLines = layoutText(o.text || ' ', o.font, o.fontSize, o.w, o.bold, o.italic).lines;
+        const neededW = measureLinesWidth(initLines, o.font, fs, o.bold, o.italic) + 2;
+        if (neededW > w) w = neededW;
+      }
       extra = { fontSize: fs };
-      h = layoutText(o.text || ' ', o.font, fs, w).height;
+      h = layoutText(o.text || ' ', o.font, fs, w, o.bold, o.italic).height;
     } else {
       w = Math.max(4, w * fx);
       h = Math.max(4, h * fy);

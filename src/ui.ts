@@ -2,15 +2,15 @@ import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import type { Assets } from './assets';
 import { exportAnnotatedPdfRoundTrip, exportPdf, exportToSvg } from './export';
-import { loadBoard, saveBoard } from './file_io';
+import { getTaskbarPrefsSync, loadBoard, saveBoard, saveTaskbarPrefs, scheduleAutosave } from './file_io';
 import type { InputManager } from './input';
 import type { Minimap } from './minimap';
 import { bboxOf, selectionFrame, textHeight } from './objects';
 import type { Ruler } from './ruler';
 import type { Scene } from './scene';
-import type { BoardSettings, Camera, DockPosition, FrameObj, LineDash, ShapeKind, ShapeTool, TextObj, Tool } from './types';
+import type { BoardSettings, Camera, DockPosition, FrameObj, LineDash, ShapeKind, ShapeTool, TaskbarPrefs, TextObj, Tool } from './types';
 import { uid } from './types';
-import { layoutText } from './textlayout';
+import { layoutText, measureWidth } from './textlayout';
 
 function escapeXml(s: string) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -172,7 +172,7 @@ export class UIManager {
     `;
 
     this.bindUIEvents();
-    this.applyDockPosition();
+    this.applyPrefs(getTaskbarPrefsSync());
     this.updateZoomDisplay();
   }
 
@@ -185,6 +185,79 @@ export class UIManager {
     } catch {
       /* ignore storage errors */
     }
+  }
+
+  applyPrefs(prefs: TaskbarPrefs) {
+    this.settings.dockPosition = prefs.dockPosition || 'bottom';
+    this.applyDockPosition();
+
+    const penBtns = this.container.querySelectorAll<HTMLButtonElement>('.pen-tray [data-tool="pen"]');
+    penBtns.forEach((btn, i) => {
+      const slot = prefs.pens[i];
+      if (slot) {
+        btn.dataset.color = slot.color;
+        btn.dataset.size = String(slot.size);
+        const ind = btn.querySelector<HTMLDivElement>('.pen-indicator');
+        if (ind) ind.style.background = slot.color;
+      }
+    });
+
+    const activeIdx = Math.max(0, Math.min(penBtns.length - 1, prefs.activePenIndex || 0));
+    if (penBtns[activeIdx]) {
+      this.lastActivePenBtn = penBtns[activeIdx];
+      if (this.input.currentTool === 'pen') {
+        penBtns.forEach((b, i) => b.classList.toggle('active', i === activeIdx));
+        this.applyPenButtonConfig(penBtns[activeIdx]);
+      }
+    }
+
+    const hlBtn = this.container.querySelector<HTMLButtonElement>('.pen-tray [data-tool="highlighter"]');
+    if (hlBtn && prefs.highlighter) {
+      hlBtn.dataset.color = prefs.highlighter.color;
+      hlBtn.dataset.size = String(prefs.highlighter.size);
+      const ind = hlBtn.querySelector<HTMLDivElement>('.pen-indicator');
+      if (ind) ind.style.background = prefs.highlighter.color;
+      this.input.highlighterConfig.color = prefs.highlighter.color;
+      this.input.highlighterConfig.size = prefs.highlighter.size;
+    }
+
+    if (prefs.eraserBaseSize > 0) {
+      this.input.eraserBaseSize = prefs.eraserBaseSize;
+    }
+    if (prefs.shapeColor) {
+      this.input.shapeConfig.color = prefs.shapeColor;
+    }
+    if (prefs.shapeSize > 0) {
+      this.input.shapeConfig.size = prefs.shapeSize;
+    }
+  }
+
+  collectAndSavePrefs() {
+    const penBtns = Array.from(this.container.querySelectorAll<HTMLButtonElement>('.pen-tray [data-tool="pen"]'));
+    const pens = penBtns.map((btn) => ({
+      color: btn.dataset.color || '#1a202c',
+      size: Number(btn.dataset.size) || 3.5,
+    }));
+    const activePenIndex = Math.max(0, penBtns.indexOf(this.lastActivePenBtn!));
+    const hlBtn = this.container.querySelector<HTMLButtonElement>('.pen-tray [data-tool="highlighter"]');
+    const highlighter = {
+      color: hlBtn?.dataset.color || this.input.highlighterConfig.color || '#ffd600',
+      size: Number(hlBtn?.dataset.size) || this.input.highlighterConfig.size || 24,
+    };
+
+    const prefs: TaskbarPrefs = {
+      dockPosition: this.settings.dockPosition || 'bottom',
+      pens,
+      activePenIndex,
+      highlighter,
+      eraserBaseSize: this.input.eraserBaseSize || 16,
+      shapeColor: this.input.shapeConfig.color || '#1a202c',
+      shapeSize: this.input.shapeConfig.size || 4,
+      dark: this.settings.dark,
+      pattern: this.settings.pattern,
+      smoothing: this.settings.smoothing || 'balanced',
+    };
+    void saveTaskbarPrefs(prefs);
   }
 
   private applyPenButtonConfig(btn: HTMLButtonElement) {
@@ -231,6 +304,9 @@ export class UIManager {
         buttons.forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
         this.applyPenButtonConfig(btn);
+        if (tool === 'pen' || tool === 'highlighter') {
+          this.collectAndSavePrefs();
+        }
         this.input.setTool(tool);
         if (tool === 'shape') {
           this.toggleShapePopover(btn);
@@ -381,12 +457,21 @@ export class UIManager {
     // Insert Image
     this.container.querySelector('#btn-insert-img')?.addEventListener('click', async () => {
       const selected = await open({
+        multiple: true,
         filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'svg'] }],
       });
-      if (selected && typeof selected === 'string') {
-        const bytes = await invoke<number[]>('read_file', { path: selected });
-        const name = selected.split(/[\\/]/).pop() || 'image';
-        await this.input.insertImageBytes(new Uint8Array(bytes), 'image/png', name);
+      if (!selected) return;
+      const paths = Array.isArray(selected) ? selected : [selected];
+      const batch: { bytes: Uint8Array; mime: string; name: string }[] = [];
+      for (const p of paths) {
+        if (typeof p === 'string') {
+          const bytes = await invoke<number[]>('read_file', { path: p });
+          const name = p.split(/[\\/]/).pop() || 'image';
+          batch.push({ bytes: new Uint8Array(bytes), mime: 'image/png', name });
+        }
+      }
+      if (batch.length > 0) {
+        await this.input.insertImagesBytes(batch);
       }
     });
 
@@ -693,6 +778,8 @@ export class UIManager {
         this.settings.pattern = p.dataset.pat as any;
         modal.querySelectorAll('[data-pat]').forEach((x) => x.classList.remove('selected'));
         p.classList.add('selected');
+        this.collectAndSavePrefs();
+        scheduleAutosave(this.scene, this.assets, this.camera, this.settings);
         this.onNeedRender();
       });
     });
@@ -702,6 +789,8 @@ export class UIManager {
         this.settings.smoothing = p.dataset.smooth as any;
         modal.querySelectorAll('[data-smooth]').forEach((x) => x.classList.remove('selected'));
         p.classList.add('selected');
+        this.collectAndSavePrefs();
+        scheduleAutosave(this.scene, this.assets, this.camera, this.settings);
         this.onNeedRender();
       });
     });
@@ -713,6 +802,8 @@ export class UIManager {
         p.classList.add('selected');
         this.closeAllPopovers();
         this.applyDockPosition();
+        this.collectAndSavePrefs();
+        scheduleAutosave(this.scene, this.assets, this.camera, this.settings);
         this.onNeedRender();
       });
     });
@@ -720,12 +811,16 @@ export class UIManager {
     modal.querySelector('#th-light')?.addEventListener('click', () => {
       this.settings.dark = false;
       document.body.classList.remove('dark');
+      this.collectAndSavePrefs();
+      scheduleAutosave(this.scene, this.assets, this.camera, this.settings);
       this.onNeedRender();
       close();
     });
     modal.querySelector('#th-dark')?.addEventListener('click', () => {
       this.settings.dark = true;
       document.body.classList.add('dark');
+      this.collectAndSavePrefs();
+      scheduleAutosave(this.scene, this.assets, this.camera, this.settings);
       this.onNeedRender();
       close();
     });
@@ -868,7 +963,7 @@ export class UIManager {
         <div class="size-preview-circle">
           <div class="size-preview-dot" id="pop-dot" style="width: ${Math.min(28, Math.max(3, cfg.size))}px; height: ${Math.min(28, Math.max(3, cfg.size))}px; background: ${cfg.color};"></div>
         </div>
-        <input type="range" class="pen-size-slider" id="pop-slider" min="1" max="${isHl ? 60 : 36}" step="0.5" value="${cfg.size}">
+        <input type="range" class="pen-size-slider" id="pop-slider" min="1" max="${isHl ? 45 : 27}" step="${isHl ? 0.5 : 0.25}" value="${cfg.size}">
       </div>
 
       <!-- Presets -->
@@ -960,6 +1055,7 @@ export class UIManager {
     }
     const indicator = target.querySelector<HTMLDivElement>('.pen-indicator');
     if (indicator) indicator.style.background = color;
+    this.collectAndSavePrefs();
   }
 
   private updatePenButtonSize(btn: HTMLButtonElement | null | undefined, size: number) {
@@ -968,6 +1064,7 @@ export class UIManager {
     if (target.dataset.tool === 'pen' || target.dataset.tool === 'highlighter') {
       target.dataset.size = String(size);
     }
+    this.collectAndSavePrefs();
   }
 
   newBoard() {
@@ -1028,7 +1125,7 @@ export class UIManager {
         const sizeVal = textFormatGroup.querySelector<HTMLElement>('#sel-font-size-val');
         if (boldBtn) boldBtn.classList.toggle('active', !!singleText.bold);
         if (italicBtn) italicBtn.classList.toggle('active', !!singleText.italic);
-        if (sizeVal) sizeVal.textContent = String(singleText.fontSize || 24);
+        if (sizeVal) sizeVal.textContent = String(Math.round(singleText.fontSize || 24));
       } else {
         textFormatGroup.style.display = 'none';
       }
@@ -1093,7 +1190,7 @@ export class UIManager {
 
     let curBold = !!obj.bold;
     let curItalic = !!obj.italic;
-    let curSize = obj.fontSize || 24;
+    let curSize = Math.round(obj.fontSize || 24);
     let curColor = obj.color || (this.settings.dark ? '#f8fafc' : '#1a202c');
 
     wrap.innerHTML = `
@@ -1180,7 +1277,9 @@ export class UIManager {
         }
         this.input.clearSelection();
       } else {
-        const measuredW = Math.max(80, textarea.offsetWidth / this.camera.zoom);
+        const rawLinesWidth = measureWidth(textarea.value, obj.font, curSize, curBold, curItalic);
+        const boxW = Math.max(40, textarea.offsetWidth / this.camera.zoom);
+        const measuredW = Math.max(40, Math.min(boxW, rawLinesWidth + 16));
         const updated: TextObj = {
           ...obj,
           text: textarea.value,
@@ -1197,7 +1296,9 @@ export class UIManager {
           this.scene.update(new Map([[obj.id, updated]]));
         }
         this.input.textConfig = { fontSize: curSize, bold: curBold, italic: curItalic };
+        this.input.setTool('select');
         this.input.selectedIds = new Set([obj.id]);
+        this.input.activeSelectionBox = null;
         this.updateSelectionToolbar();
       }
       this.onNeedRender();
@@ -1327,6 +1428,7 @@ export class UIManager {
       popover.querySelectorAll('.size-chip').forEach((ch: any) => {
         ch.classList.toggle('selected', Number(ch.dataset.size) === newSize);
       });
+      this.collectAndSavePrefs();
     };
 
     slider.addEventListener('input', (e: any) => {
@@ -1552,7 +1654,7 @@ export class UIManager {
         <div class="size-preview-circle">
           <div class="size-preview-dot" id="shape-dot" style="width: ${Math.min(26, Math.max(3, this.input.shapeConfig.size))}px; height: ${Math.min(26, Math.max(3, this.input.shapeConfig.size))}px; background: ${this.input.shapeConfig.color};"></div>
         </div>
-        <input type="range" class="pen-size-slider" id="shape-slider" min="1" max="28" step="0.5" value="${this.input.shapeConfig.size}">
+        <input type="range" class="pen-size-slider" id="shape-slider" min="1" max="21" step="0.25" value="${this.input.shapeConfig.size}">
         <span style="font-size: 12px; min-width: 38px; text-align: right;" id="shape-slider-val">${this.input.shapeConfig.size} px</span>
       </div>
 
@@ -1651,6 +1753,7 @@ export class UIManager {
       popover.querySelectorAll('.size-chip').forEach((c: any) => {
         c.classList.toggle('selected', Number(c.dataset.size) === sz);
       });
+      this.collectAndSavePrefs();
     };
     slider.addEventListener('input', (e: any) => setSize(Number(e.target.value)));
     popover.querySelectorAll<HTMLButtonElement>('.size-chip').forEach((btn) => {
@@ -1667,6 +1770,7 @@ export class UIManager {
         if (customColor) customColor.value = c;
         popover.querySelectorAll('.color-swatch').forEach((s) => s.classList.remove('selected'));
         sw.classList.add('selected');
+        this.collectAndSavePrefs();
       });
     });
     customColor.addEventListener('input', (e: any) => {
@@ -1674,6 +1778,7 @@ export class UIManager {
       this.input.shapeConfig.color = c;
       dot.style.background = c;
       popover.querySelectorAll('.color-swatch').forEach((s) => s.classList.remove('selected'));
+      this.collectAndSavePrefs();
     });
 
     // Close when clicking outside

@@ -1,13 +1,13 @@
 import { invoke } from '@tauri-apps/api/core';
 import { Assets } from './assets';
-import { checkCrashRecovery, loadBoard, scheduleAutosave } from './file_io';
+import { checkCrashRecovery, getTaskbarPrefsSync, loadBoard, loadTaskbarPrefs, scheduleAutosave } from './file_io';
 import { InputManager } from './input';
 import { Minimap } from './minimap';
 import { RadialMenu } from './radial_menu';
 import { Renderer } from './renderer';
 import { Ruler } from './ruler';
 import { Scene } from './scene';
-import type { BoardSettings, Camera, DockPosition } from './types';
+import type { BoardSettings, Camera } from './types';
 import { UIManager } from './ui';
 
 async function bootstrap() {
@@ -15,13 +15,14 @@ async function bootstrap() {
   const ctx = canvas.getContext('2d', { desynchronized: true })!;
   const uiContainer = document.getElementById('ui') as HTMLElement;
 
-  const savedDock = (localStorage.getItem('rustboard_dock_position') as DockPosition) || 'bottom';
+  const initPrefs = getTaskbarPrefsSync();
   const settings: BoardSettings = {
-    pattern: 'dots',
-    dark: false,
-    smoothing: 'balanced',
-    dockPosition: savedDock,
+    pattern: initPrefs.pattern || 'dots',
+    dark: !!initPrefs.dark,
+    smoothing: initPrefs.smoothing || 'balanced',
+    dockPosition: initPrefs.dockPosition || 'bottom',
   };
+  document.body.classList.toggle('dark', settings.dark);
 
   const camera: Camera = {
     x: window.innerWidth / 2,
@@ -132,16 +133,26 @@ async function bootstrap() {
   }
   requestAnimationFrame(tick);
 
-  // Startup checks: file association (.rboard or .pdf) or crash recovery
+  // Startup checks: load persistent taskbar preferences from disk, then file association or crash recovery
   try {
+    const diskPrefs = await loadTaskbarPrefs();
+    settings.dockPosition = diskPrefs.dockPosition || 'bottom';
+    settings.dark = !!diskPrefs.dark;
+    settings.pattern = diskPrefs.pattern || 'dots';
+    settings.smoothing = diskPrefs.smoothing || 'balanced';
+    document.body.classList.toggle('dark', settings.dark);
+    ui.applyPrefs(diskPrefs);
+    requestRender();
+
     const startupFile = await invoke<string | null>('get_startup_file');
     if (startupFile) {
       if (startupFile.toLowerCase().endsWith('.rboard')) {
         const res = await loadBoard(startupFile, scene, assets);
         Object.assign(camera, res.camera);
         Object.assign(settings, res.settings);
+        settings.dockPosition = diskPrefs.dockPosition || 'bottom';
         document.body.classList.toggle('dark', settings.dark);
-        ui.applyDockPosition();
+        ui.applyPrefs(diskPrefs);
         requestRender();
       } else if (startupFile.toLowerCase().endsWith('.pdf')) {
         const bytes = await invoke<number[]>('read_file', { path: startupFile });
@@ -156,10 +167,12 @@ async function bootstrap() {
           async () => {
             try {
               const res = await loadBoard(rec, scene, assets);
+              const latestPrefs = getTaskbarPrefsSync();
               Object.assign(camera, res.camera);
               Object.assign(settings, res.settings);
+              settings.dockPosition = latestPrefs.dockPosition || 'bottom';
               document.body.classList.toggle('dark', settings.dark);
-              ui.applyDockPosition();
+              ui.applyPrefs(latestPrefs);
               requestRender();
             } catch {
               /* recovery failed, start fresh */

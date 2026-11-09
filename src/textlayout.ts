@@ -85,7 +85,16 @@ export function layoutText(
   return res;
 }
 
-export function measureWidth(text: string, font: FontKey, size: number) {
-  mctx.font = `${size}px ${FONTS[font]}`;
+export function measureWidth(text: string, font: FontKey, size: number, bold = false, italic = false) {
+  const weight = bold ? 'bold ' : '';
+  const style = italic ? 'italic ' : '';
+  mctx.font = `${style}${weight}${size}px ${FONTS[font]}`;
   return Math.max(...text.split('\n').map((l) => mctx.measureText(l).width), 10);
+}
+
+export function measureLinesWidth(lines: string[], font: FontKey, size: number, bold = false, italic = false) {
+  const weight = bold ? 'bold ' : '';
+  const style = italic ? 'italic ' : '';
+  mctx.font = `${style}${weight}${size}px ${FONTS[font]}`;
+  return Math.max(...lines.map((l) => mctx.measureText(l).width), 10);
 }
