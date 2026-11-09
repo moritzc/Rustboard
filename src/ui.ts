@@ -173,7 +173,6 @@ export class UIManager {
 
     this.bindUIEvents();
     this.applyDockPosition();
-    this.applyScreenShareMode();
     this.updateZoomDisplay();
   }
 
@@ -186,17 +185,6 @@ export class UIManager {
     } catch {
       /* ignore storage errors */
     }
-  }
-
-  applyScreenShareMode() {
-    const enabled = !!this.settings.screenShareMode;
-    document.body.classList.toggle('screen-share-mode', enabled);
-    try {
-      localStorage.setItem('rustboard_screen_share', enabled ? '1' : '0');
-    } catch {
-      /* ignore storage errors */
-    }
-    window.dispatchEvent(new Event('resize'));
   }
 
   private applyPenButtonConfig(btn: HTMLButtonElement) {
@@ -491,7 +479,6 @@ export class UIManager {
       Object.assign(this.settings, res.settings);
       document.body.classList.toggle('dark', this.settings.dark);
       this.applyDockPosition();
-      this.applyScreenShareMode();
       this.updateZoomDisplay();
       this.onNeedRender();
     }
@@ -688,14 +675,6 @@ export class UIManager {
           <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
             Displays a detailed live overview of the board. Enabling this may cause slight performance downgrades on very large boards.
           </div>
-
-          <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; margin-top: 12px;">
-            <input type="checkbox" id="chk-screenshare" ${this.settings.screenShareMode ? 'checked' : ''}/>
-            Screen Sharing Mode (Teams / Zoom)
-          </label>
-          <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
-            Isolates live pen strokes onto a dirty-rect overlay, disables GPU blur shaders, and caps HiDPI resolution for smooth streaming on integrated graphics.
-          </div>
         </div>
 
         <div style="margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--panel-border); text-align: center; font-size: 13px; color: var(--text-muted); font-weight: 500;">
@@ -753,12 +732,6 @@ export class UIManager {
 
     modal.querySelector('#chk-minimap')?.addEventListener('change', (e: any) => {
       this.minimap.visible = e.target.checked;
-      this.onNeedRender();
-    });
-
-    modal.querySelector('#chk-screenshare')?.addEventListener('change', (e: any) => {
-      this.settings.screenShareMode = !!e.target.checked;
-      this.applyScreenShareMode();
       this.onNeedRender();
     });
   }

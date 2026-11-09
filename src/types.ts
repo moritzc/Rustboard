@@ -106,7 +106,6 @@ export interface BoardSettings {
   dark: boolean;
   smoothing?: InkingSmoothing;
   dockPosition?: DockPosition;
-  screenShareMode?: boolean;
 }
 
 export interface Camera {

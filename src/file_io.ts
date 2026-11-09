@@ -93,7 +93,6 @@ export async function loadBoard(
 
   scene.reset(boardData.objects || []);
   const savedDock = (localStorage.getItem('rustboard_dock_position') as DockPosition) || 'bottom';
-  const savedScreenShare = localStorage.getItem('rustboard_screen_share') === '1';
   return {
     camera: boardData.camera || { x: 0, y: 0, zoom: 1 },
     settings: {
@@ -101,7 +100,6 @@ export async function loadBoard(
       dark: boardData.settings?.dark ?? false,
       smoothing: boardData.settings?.smoothing ?? 'balanced',
       dockPosition: boardData.settings?.dockPosition ?? savedDock,
-      screenShareMode: boardData.settings?.screenShareMode ?? savedScreenShare,
     },
   };
 }

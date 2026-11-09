@@ -28,12 +28,9 @@ export class Renderer {
   private cachedCamY = 0;
   private cachedPadX = 0;
   private cachedPadY = 0;
-  private lastMainStateKey = '';
-  private prevOverlayDirty: BBox | null = null;
 
   invalidateCache() {
     this.sceneCacheKey = '';
-    this.lastMainStateKey = '';
   }
 
   addLaser(x: number, y: number, color = '#ff1744') {
@@ -63,17 +60,16 @@ export class Renderer {
     assetsVersion?: number,
     activeTransformIds?: Set<string> | null,
     transformSessionId?: number,
-    overlayCtx?: CanvasRenderingContext2D,
   ) {
-    const cssW = window.innerWidth || 1;
-    const cssH = window.innerHeight || 1;
+    const dpr = window.devicePixelRatio || 1;
     const canvasW = ctx.canvas.width;
-    const dpr = canvasW / cssW;
+    const canvasH = ctx.canvas.height;
+    const cssW = canvasW / dpr;
+    const cssH = canvasH / dpr;
 
     // Overscan padding in CSS pixels so camera panning/wiggling reuses the cached bitmap
-    const overscanRatio = settings.screenShareMode ? 0.15 : 0.4;
-    const padX = Math.round(cssW * overscanRatio);
-    const padY = Math.round(cssH * overscanRatio);
+    const padX = Math.round(cssW * 0.4);
+    const padY = Math.round(cssH * 0.4);
     const bufCssW = cssW + padX * 2;
     const bufCssH = cssH + padY * 2;
     const bufW = Math.round(bufCssW * dpr);
@@ -143,74 +139,19 @@ export class Renderer {
       this.cachedPadY = padY;
     }
 
-    const useSplitOverlay = !!(settings.screenShareMode && overlayCtx);
-    const mainStateKey = `${baseCacheKey}_${camera.x.toFixed(2)}_${camera.y.toFixed(2)}_${settings.pattern}`;
+    // 1. Render background directly to screen
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.renderBackground(ctx, camera, settings, cssW, cssH);
 
-    if (!useSplitOverlay || this.lastMainStateKey !== mainStateKey) {
-      // 1. Render background directly to screen
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      this.renderBackground(ctx, camera, settings, cssW, cssH);
-
-      // 2. Blit the pre-rendered overscan scene buffer at the current camera offset
-      const shiftX = camera.x - this.cachedCamX - this.cachedPadX;
-      const shiftY = camera.y - this.cachedCamY - this.cachedPadY;
-      ctx.drawImage(this.sceneCanvas!, shiftX, shiftY, bufCssW, bufCssH);
-      this.lastMainStateKey = useSplitOverlay ? mainStateKey : '';
-    }
-
-    if (!useSplitOverlay && this.prevOverlayDirty && overlayCtx) {
-      overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      overlayCtx.clearRect(0, 0, cssW, cssH);
-      this.prevOverlayDirty = null;
-    }
-
-    const targetCtx = useSplitOverlay ? overlayCtx! : ctx;
-    let curOverlayDirty: BBox | null = null;
-
-    if (useSplitOverlay) {
-      curOverlayDirty = this.computeOverlayDirtyBBox(
-        cssW,
-        cssH,
-        camera,
-        hasActiveTransform,
-        activeDraft,
-        selectedIds,
-        lassoPoly,
-        eraserState,
-        ruler,
-        radial,
-        minimap,
-      );
-
-      targetCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const clearBox = this.unionBBox(this.prevOverlayDirty, curOverlayDirty);
-      if (clearBox) {
-        targetCtx.clearRect(
-          clearBox[0],
-          clearBox[1],
-          clearBox[2] - clearBox[0],
-          clearBox[3] - clearBox[1],
-        );
-      }
-      this.prevOverlayDirty = curOverlayDirty;
-      if (!curOverlayDirty) {
-        return;
-      }
-      targetCtx.save();
-      targetCtx.beginPath();
-      targetCtx.rect(
-        curOverlayDirty[0],
-        curOverlayDirty[1],
-        curOverlayDirty[2] - curOverlayDirty[0],
-        curOverlayDirty[3] - curOverlayDirty[1],
-      );
-      targetCtx.clip();
-    }
+    // 2. Blit the pre-rendered overscan scene buffer at the current camera offset
+    const shiftX = camera.x - this.cachedCamX - this.cachedPadX;
+    const shiftY = camera.y - this.cachedCamY - this.cachedPadY;
+    ctx.drawImage(this.sceneCanvas!, shiftX, shiftY, bufCssW, bufCssH);
 
     // 3. Render dynamic overlays with camera transform
-    targetCtx.save();
-    targetCtx.translate(camera.x, camera.y);
-    targetCtx.scale(camera.zoom, camera.zoom);
+    ctx.save();
+    ctx.translate(camera.x, camera.y);
+    ctx.scale(camera.zoom, camera.zoom);
 
     // 3a. Actively moving / rotating / resizing selection objects
     if (hasActiveTransform) {
@@ -220,7 +161,7 @@ export class Renderer {
       const vBottom = (cssH - camera.y) / camera.zoom;
       const screenBBox: BBox = [vLeft - 80, vTop - 80, vRight + 80, vBottom + 80];
       this.renderLayerObjects(
-        targetCtx,
+        ctx,
         objects,
         screenBBox,
         camera.zoom,
@@ -235,164 +176,72 @@ export class Renderer {
     // 2f. Active interactive draft (in-progress stroke, shape, or frame)
     if (activeDraft) {
       if (activeDraft.type === 'frame') {
-        this.renderFrame(targetCtx, activeDraft, camera.zoom, settings.dark, true);
+        this.renderFrame(ctx, activeDraft, camera.zoom, settings.dark, true);
       } else if (activeDraft.type === 'stroke' && activeDraft.highlighter) {
-        targetCtx.save();
-        targetCtx.globalAlpha = 0.45;
-        this.renderStroke(targetCtx, activeDraft, smoothingMode);
-        targetCtx.restore();
+        ctx.save();
+        ctx.globalAlpha = 0.45;
+        this.renderStroke(ctx, activeDraft, smoothingMode);
+        ctx.restore();
       } else {
-        this.renderObject(targetCtx, activeDraft, assets, camera.zoom, smoothingMode);
+        this.renderObject(ctx, activeDraft, assets, camera.zoom, smoothingMode);
       }
     }
 
     // 2g. Laser pointer / fading ink trails
-    this.renderLaser(targetCtx);
+    this.renderLaser(ctx);
 
     // 2h. Selection indicators & bounding box
     if (selectedIds.size > 0) {
-      this.renderSelection(targetCtx, objects, selectedIds, camera.zoom, activeSelectionBox);
+      this.renderSelection(ctx, objects, selectedIds, camera.zoom, activeSelectionBox);
     }
 
     // 2i. Lasso outline
     if (lassoPoly && lassoPoly.length >= 4) {
-      targetCtx.save();
-      targetCtx.strokeStyle = '#2b6cb0';
-      targetCtx.lineWidth = 1.5 / camera.zoom;
-      targetCtx.setLineDash([4 / camera.zoom, 4 / camera.zoom]);
-      targetCtx.fillStyle = 'rgba(43, 108, 176, 0.08)';
-      targetCtx.beginPath();
-      targetCtx.moveTo(lassoPoly[0], lassoPoly[1]);
+      ctx.save();
+      ctx.strokeStyle = '#2b6cb0';
+      ctx.lineWidth = 1.5 / camera.zoom;
+      ctx.setLineDash([4 / camera.zoom, 4 / camera.zoom]);
+      ctx.fillStyle = 'rgba(43, 108, 176, 0.08)';
+      ctx.beginPath();
+      ctx.moveTo(lassoPoly[0], lassoPoly[1]);
       for (let i = 2; i < lassoPoly.length; i += 2) {
-        targetCtx.lineTo(lassoPoly[i], lassoPoly[i + 1]);
+        ctx.lineTo(lassoPoly[i], lassoPoly[i + 1]);
       }
-      targetCtx.closePath();
-      targetCtx.fill();
-      targetCtx.stroke();
-      targetCtx.restore();
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
     }
 
     // 2j. Eraser circle cursor with velocity-adaptive radius
     if (eraserState && eraserState.active) {
-      targetCtx.save();
+      ctx.save();
       const strokeColor = settings.dark ? 'rgba(255, 255, 255, 0.8)' : 'rgba(71, 85, 105, 0.85)';
       const fillColor = settings.dark ? 'rgba(255, 255, 255, 0.16)' : 'rgba(203, 213, 225, 0.35)';
-      targetCtx.strokeStyle = strokeColor;
-      targetCtx.fillStyle = fillColor;
-      targetCtx.lineWidth = 1.8 / camera.zoom;
-      targetCtx.setLineDash([5 / camera.zoom, 4 / camera.zoom]);
-      targetCtx.beginPath();
-      targetCtx.arc(eraserState.x, eraserState.y, eraserState.radius, 0, Math.PI * 2);
-      targetCtx.fill();
-      targetCtx.stroke();
+      ctx.strokeStyle = strokeColor;
+      ctx.fillStyle = fillColor;
+      ctx.lineWidth = 1.8 / camera.zoom;
+      ctx.setLineDash([5 / camera.zoom, 4 / camera.zoom]);
+      ctx.beginPath();
+      ctx.arc(eraserState.x, eraserState.y, eraserState.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
 
       // Center dot
-      targetCtx.setLineDash([]);
-      targetCtx.fillStyle = strokeColor;
-      targetCtx.beginPath();
-      targetCtx.arc(eraserState.x, eraserState.y, 2 / camera.zoom, 0, Math.PI * 2);
-      targetCtx.fill();
-      targetCtx.restore();
+      ctx.setLineDash([]);
+      ctx.fillStyle = strokeColor;
+      ctx.beginPath();
+      ctx.arc(eraserState.x, eraserState.y, 2 / camera.zoom, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
     }
 
-    targetCtx.restore(); // Exit camera world transform
+    ctx.restore(); // Exit camera world transform
 
     // 3. Screen overlays (Ruler, Radial menu, Minimap)
-    ruler.render(targetCtx);
-    radial.render(targetCtx);
-    minimap.render(targetCtx, camera, objects, cssW, cssH, settings.dark, assets, sVer, settings.dockPosition || 'bottom');
-
-    if (useSplitOverlay) {
-      targetCtx.restore(); // Exit dirty rect clip
-    }
-  }
-
-  private unionBBox(a: BBox | null, b: BBox | null): BBox | null {
-    if (!a) return b;
-    if (!b) return a;
-    return [
-      Math.min(a[0], b[0]),
-      Math.min(a[1], b[1]),
-      Math.max(a[2], b[2]),
-      Math.max(a[3], b[3]),
-    ];
-  }
-
-  private computeOverlayDirtyBBox(
-    cssW: number,
-    cssH: number,
-    camera: Camera,
-    hasActiveTransform: boolean,
-    activeDraft: Obj | null | undefined,
-    selectedIds: Set<string>,
-    lassoPoly: number[] | null | undefined,
-    eraserState: EraserState | null | undefined,
-    ruler: Ruler,
-    radial: RadialMenu,
-    minimap: Minimap,
-  ): BBox | null {
-    if (hasActiveTransform || selectedIds.size > 0 || ruler.state.enabled || radial.visible) {
-      return [0, 0, cssW, cssH];
-    }
-
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-
-    const addScreenRect = (x0: number, y0: number, x1: number, y1: number) => {
-      if (x0 < minX) minX = x0;
-      if (y0 < minY) minY = y0;
-      if (x1 > maxX) maxX = x1;
-      if (y1 > maxY) maxY = y1;
-    };
-
-    if (activeDraft) {
-      const b = bboxOf(activeDraft);
-      const pad = 42;
-      addScreenRect(
-        b[0] * camera.zoom + camera.x - pad,
-        b[1] * camera.zoom + camera.y - pad,
-        b[2] * camera.zoom + camera.x + pad,
-        b[3] * camera.zoom + camera.y + pad,
-      );
-    }
-
-    if (this.laserPoints.length > 0) {
-      for (const lp of this.laserPoints) {
-        const sx = lp.x * camera.zoom + camera.x;
-        const sy = lp.y * camera.zoom + camera.y;
-        addScreenRect(sx - 24, sy - 24, sx + 24, sy + 24);
-      }
-    }
-
-    if (lassoPoly && lassoPoly.length >= 4) {
-      for (let i = 0; i < lassoPoly.length; i += 2) {
-        const sx = lassoPoly[i] * camera.zoom + camera.x;
-        const sy = lassoPoly[i + 1] * camera.zoom + camera.y;
-        addScreenRect(sx - 12, sy - 12, sx + 12, sy + 12);
-      }
-    }
-
-    if (eraserState && eraserState.active) {
-      const sx = eraserState.x * camera.zoom + camera.x;
-      const sy = eraserState.y * camera.zoom + camera.y;
-      const sr = eraserState.radius * camera.zoom + 12;
-      addScreenRect(sx - sr, sy - sr, sx + sr, sy + sr);
-    }
-
-    if (minimap.visible) {
-      addScreenRect(0, cssH - 250, cssW, cssH);
-    }
-
-    if (!isFinite(minX)) return null;
-
-    return [
-      Math.max(0, Math.floor(minX)),
-      Math.max(0, Math.floor(minY)),
-      Math.min(cssW, Math.ceil(maxX)),
-      Math.min(cssH, Math.ceil(maxY)),
-    ];
+    ruler.render(ctx);
+    radial.render(ctx);
+    minimap.render(ctx, camera, objects, cssW, cssH, settings.dark, assets, sVer, settings.dockPosition || 'bottom');
   }
 
   private renderLayerObjects(
