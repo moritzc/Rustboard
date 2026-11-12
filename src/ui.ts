@@ -632,7 +632,12 @@ export class UIManager {
         defaultPath: 'Rustboard_Pages.pdf',
       });
       if (path && typeof path === 'string') {
-        await exportPdf(this.scene.objects, this.assets, path, frames, this.settings.dark);
+        try {
+          await exportPdf(this.scene.objects, this.assets, path, frames, this.settings.dark);
+        } catch (err) {
+          console.error('PDF export failed:', err);
+          alert(`PDF export failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     });
 
@@ -644,7 +649,12 @@ export class UIManager {
         defaultPath: 'Rustboard_Board.pdf',
       });
       if (path && typeof path === 'string') {
-        await exportPdf(this.scene.objects, this.assets, path, null, this.settings.dark);
+        try {
+          await exportPdf(this.scene.objects, this.assets, path, null, this.settings.dark);
+        } catch (err) {
+          console.error('PDF export failed:', err);
+          alert(`PDF export failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     });
 
@@ -657,7 +667,12 @@ export class UIManager {
         defaultPath: 'Annotated.pdf',
       });
       if (path && typeof path === 'string') {
-        await exportAnnotatedPdfRoundTrip(this.scene.objects, this.assets, firstPdf.asset, path);
+        try {
+          await exportAnnotatedPdfRoundTrip(this.scene.objects, this.assets, firstPdf.asset, path);
+        } catch (err) {
+          console.error('Annotated PDF export failed:', err);
+          alert(`Annotated PDF export failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     });
 
@@ -1190,7 +1205,7 @@ export class UIManager {
 
     let curBold = !!obj.bold;
     let curItalic = !!obj.italic;
-    let curSize = Math.round(obj.fontSize || 24);
+    let curSize = obj.fontSize || 24;
     let curColor = obj.color || (this.settings.dark ? '#f8fafc' : '#1a202c');
 
     wrap.innerHTML = `
@@ -1198,7 +1213,7 @@ export class UIManager {
         <button class="tool-btn format-btn ${curBold ? 'active' : ''}" id="inline-bold" title="Toggle Bold"><b>B</b></button>
         <button class="tool-btn format-btn ${curItalic ? 'active' : ''}" id="inline-italic" title="Toggle Italic"><i>I</i></button>
         <button class="tool-btn format-btn" id="inline-size-down" title="Smaller Font Size">A-</button>
-        <span id="inline-size-val" style="font-size: 12px; font-weight: 600; min-width: 28px; text-align: center;">${curSize}</span>
+        <span id="inline-size-val" style="font-size: 12px; font-weight: 600; min-width: 28px; text-align: center;">${Math.round(curSize)}</span>
         <button class="tool-btn format-btn" id="inline-size-up" title="Larger Font Size">A+</button>
         <input type="color" class="custom-color-input" id="inline-color" value="${curColor}" title="Text Color" style="width: 26px; height: 26px; border: none; cursor: pointer; border-radius: 4px; padding: 0;">
         <button class="tool-btn format-btn" id="inline-done" title="Finish Editing (Esc or Enter)" style="width: auto; padding: 0 10px; background: var(--accent); color: white;">Done</button>
@@ -1217,6 +1232,8 @@ export class UIManager {
     const colorInp = wrap.querySelector<HTMLInputElement>('#inline-color')!;
     const doneBtn = wrap.querySelector<HTMLButtonElement>('#inline-done')!;
 
+    textarea.style.width = `${Math.max(200, obj.w * this.camera.zoom)}px`;
+
     const applyStylesToTextarea = () => {
       textarea.style.fontSize = `${Math.max(12, curSize * this.camera.zoom)}px`;
       textarea.style.fontWeight = curBold ? 'bold' : 'normal';
@@ -1227,6 +1244,7 @@ export class UIManager {
     };
 
     applyStylesToTextarea();
+    const initEditorW = textarea.offsetWidth;
 
     boldBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -1244,15 +1262,15 @@ export class UIManager {
 
     sizeDown.addEventListener('click', (e) => {
       e.stopPropagation();
-      curSize = Math.max(12, curSize - 4);
-      sizeVal.textContent = String(curSize);
+      curSize = Math.max(12, Math.round(curSize) - 4);
+      sizeVal.textContent = String(Math.round(curSize));
       applyStylesToTextarea();
     });
 
     sizeUp.addEventListener('click', (e) => {
       e.stopPropagation();
-      curSize = Math.min(120, curSize + 4);
-      sizeVal.textContent = String(curSize);
+      curSize = Math.min(120, Math.round(curSize) + 4);
+      sizeVal.textContent = String(Math.round(curSize));
       applyStylesToTextarea();
     });
 
@@ -1269,6 +1287,7 @@ export class UIManager {
       committed = true;
       window.removeEventListener('pointerdown', onOutside);
       const textVal = textarea.value.trim();
+      const editorOffsetW = textarea.offsetWidth;
       wrap.remove();
 
       if (!textVal) {
@@ -1277,9 +1296,17 @@ export class UIManager {
         }
         this.input.clearSelection();
       } else {
-        const rawLinesWidth = measureWidth(textarea.value, obj.font, curSize, curBold, curItalic);
-        const boxW = Math.max(40, textarea.offsetWidth / this.camera.zoom);
-        const measuredW = Math.max(40, Math.min(boxW, rawLinesWidth + 16));
+        const userResizedEditor = Math.abs(editorOffsetW - initEditorW) > 2;
+        let measuredW: number;
+        if (userResizedEditor) {
+          measuredW = Math.max(40, editorOffsetW / this.camera.zoom);
+        } else if (isNew) {
+          const rawLinesWidth = measureWidth(textarea.value, obj.font, curSize, curBold, curItalic);
+          const boxW = Math.max(40, editorOffsetW / this.camera.zoom);
+          measuredW = Math.max(40, Math.min(boxW, rawLinesWidth + 16));
+        } else {
+          measuredW = obj.w;
+        }
         const updated: TextObj = {
           ...obj,
           text: textarea.value,

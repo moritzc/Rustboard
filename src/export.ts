@@ -22,6 +22,7 @@ export function exportToSvg(
   bounds: BBox,
   dark = false,
   includeBg = true,
+  imageOverrides?: Map<string, string>,
 ): string {
   const [minX, minY, maxX, maxY] = bounds;
   const w = Math.max(10, maxX - minX);
@@ -56,14 +57,14 @@ export function exportToSvg(
 
   // Normal items
   for (const o of normal) {
-    xml += objectToSvg(o, assets);
+    xml += objectToSvg(o, assets, imageOverrides);
   }
 
   xml += `</svg>`;
   return xml;
 }
 
-function objectToSvg(o: Obj, assets: Assets): string {
+function objectToSvg(o: Obj, assets: Assets, imageOverrides?: Map<string, string>): string {
   switch (o.type) {
     case 'stroke': {
       const outline = strokeOutline(o.pts, o);
@@ -77,7 +78,7 @@ function objectToSvg(o: Obj, assets: Assets): string {
     case 'text':
       return textToSvg(o);
     case 'image': {
-      const href = assets.dataUrl(o.asset);
+      const href = imageOverrides?.get(o.asset) ?? assets.dataUrl(o.asset);
       const rot = o.rot ? ` transform="rotate(${(o.rot * 180) / Math.PI} ${o.x + o.w / 2} ${o.y + o.h / 2})"` : '';
       return `  <image href="${href}" x="${o.x}" y="${o.y}" width="${o.w}" height="${o.h}" preserveAspectRatio="none"${rot}/>\n`;
     }
@@ -161,6 +162,26 @@ function textToSvg(t: TextObj): string {
   return s;
 }
 
+const SVG_NATIVE_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/svg+xml']);
+
+async function prepareExportImages(objects: Obj[], assets: Assets): Promise<Map<string, string> | undefined> {
+  const overrides = new Map<string, string>();
+  for (const o of objects) {
+    if (o.type !== 'image' || overrides.has(o.asset)) continue;
+    const asset = assets.get(o.asset);
+    if (!asset || SVG_NATIVE_IMAGE_MIMES.has(asset.mime)) continue;
+    const img = await assets.imageAsync(o.asset);
+    const w = 'naturalWidth' in img ? img.naturalWidth : img.width;
+    const h = 'naturalHeight' in img ? img.naturalHeight : img.height;
+    const cvs = document.createElement('canvas');
+    cvs.width = Math.max(1, w);
+    cvs.height = Math.max(1, h);
+    cvs.getContext('2d')!.drawImage(img, 0, 0);
+    overrides.set(o.asset, cvs.toDataURL('image/png'));
+  }
+  return overrides.size > 0 ? overrides : undefined;
+}
+
 /**
  * PDF Export: converts board (either whole board, or one page per Frame) to vector PDF.
  */
@@ -177,6 +198,7 @@ export async function exportPdf(
     height: number;
   }
   const pages: SvgPage[] = [];
+  const imageOverrides = await prepareExportImages(objects, assets);
 
   if (frames && frames.length > 0) {
     // Export one PDF page per Frame
@@ -188,7 +210,7 @@ export async function exportPdf(
         const b = bboxOf(o);
         return !(b[2] < fBBox[0] || b[0] > fBBox[2] || b[3] < fBBox[1] || b[1] > fBBox[3]);
       });
-      const svg = exportToSvg(pageObjs, assets, fBBox, dark, true);
+      const svg = exportToSvg(pageObjs, assets, fBBox, dark, true, imageOverrides);
       // Convert world px to PDF points
       pages.push({
         svg,
@@ -213,7 +235,7 @@ export async function exportPdf(
     const b: BBox = [minX - pad, minY - pad, maxX + pad, maxY + pad];
     const w = b[2] - b[0];
     const h = b[3] - b[1];
-    const svg = exportToSvg(objects, assets, b, dark, true);
+    const svg = exportToSvg(objects, assets, b, dark, true, imageOverrides);
     pages.push({
       svg,
       width: w / PT,
