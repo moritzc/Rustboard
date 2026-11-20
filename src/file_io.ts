@@ -123,24 +123,23 @@ export interface BoardFile {
   objects: Obj[];
 }
 
-export async function saveBoard(
-  scene: Scene,
+export function serializeBoard(
+  objects: Obj[],
   assets: Assets,
   camera: Camera,
   settings: BoardSettings,
-  path: string,
-  markSaved = true,
-) {
+  compressionLevel: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 = 6,
+): Uint8Array {
   const fileData: BoardFile = {
     version: 1,
     settings,
     camera,
-    objects: scene.objects,
+    objects,
   };
 
-  // Find all assets actually referenced in the scene
+  // Find all assets actually referenced in the objects
   const usedAssetIds = new Set<string>();
-  for (const o of scene.objects) {
+  for (const o of objects) {
     if (o.type === 'image' || o.type === 'pdfpage') {
       usedAssetIds.add(o.asset);
     }
@@ -158,7 +157,28 @@ export async function saveBoard(
     }
   }
 
-  const zipped = zipSync(zipFiles, { level: 6 });
+  return zipSync(zipFiles, { level: compressionLevel });
+}
+
+export async function spawnNewInstanceWithObjects(
+  objects: Obj[],
+  assets: Assets,
+  camera: Camera,
+  settings: BoardSettings,
+): Promise<void> {
+  const zipped = serializeBoard(objects, assets, camera, settings, 1);
+  await invoke('spawn_board_instance', zipped);
+}
+
+export async function saveBoard(
+  scene: Scene,
+  assets: Assets,
+  camera: Camera,
+  settings: BoardSettings,
+  path: string,
+  markSaved = true,
+) {
+  const zipped = serializeBoard(scene.objects, assets, camera, settings, 6);
 
   // Write file via Tauri IPC
   await invoke('write_file', zipped, {

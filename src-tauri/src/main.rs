@@ -67,12 +67,20 @@ async fn write_file(request: Request<'_>) -> Result<(), String> {
     write_atomic(&path, &data)
 }
 
+static TMP_SEQ: AtomicU32 = AtomicU32::new(0);
+
 fn write_atomic(path: &str, data: &[u8]) -> Result<(), String> {
     let p = std::path::Path::new(path);
     if let Some(dir) = p.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let tmp = p.with_extension("rbtmp");
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let fname = p
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "board".to_string());
+    let tmp = p.with_file_name(format!("{fname}.{pid}.{seq}.rbtmp"));
     std::fs::write(&tmp, data).map_err(|e| format!("Could not write {path}: {e}"))?;
     std::fs::rename(&tmp, p).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
@@ -106,10 +114,82 @@ fn recovery_dir(app: tauri::AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 fn get_startup_file() -> Option<String> {
-    std::env::args().skip(1).find(|a| {
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if a == "--open-selection-board" {
+            let _ = args.next();
+            continue;
+        }
         let l = a.to_lowercase();
-        (l.ends_with(".rboard") || l.ends_with(".pdf")) && std::path::Path::new(a).exists()
-    })
+        if (l.ends_with(".rboard") || l.ends_with(".pdf")) && std::path::Path::new(&a).exists() {
+            return Some(a);
+        }
+    }
+    None
+}
+
+#[tauri::command]
+fn get_startup_selection_board() -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if a == "--open-selection-board" {
+            if let Some(path) = args.next() {
+                if std::path::Path::new(&path).exists() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
+}
+
+#[tauri::command]
+async fn spawn_board_instance(request: Request<'_>, app: tauri::AppHandle) -> Result<(), String> {
+    let data = raw_body(&request)?;
+    let dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("handoff");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    // Best-effort cleanup of stale handoff files older than 24h
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let now = std::time::SystemTime::now();
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if let Ok(modified) = meta.modified() {
+                    if let Ok(age) = now.duration_since(modified) {
+                        if age.as_secs() > 86_400 {
+                            let _ = std::fs::remove_file(entry.path());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let handoff_path = dir.join(format!("selection_{ts}_{pid}_{seq}.rboard"));
+    let handoff_str = handoff_path.to_string_lossy().into_owned();
+    write_atomic(&handoff_str, &data)?;
+
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("Could not locate Rustboard executable: {e}"))?;
+    std::process::Command::new(&exe)
+        .arg("--open-selection-board")
+        .arg(&handoff_path)
+        .spawn()
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&handoff_path);
+            format!("Could not launch new Rustboard instance: {e}")
+        })?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -246,6 +326,8 @@ fn main() {
             file_exists,
             recovery_dir,
             get_startup_file,
+            get_startup_selection_board,
+            spawn_board_instance,
             stage_blob,
             export_pdf,
             export_annotated_pdf,

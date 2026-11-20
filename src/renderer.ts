@@ -1,6 +1,6 @@
 import type { Assets } from './assets';
 import type { EraserState } from './eraser';
-import { bboxIntersects, type BBox } from './geom';
+import { bboxIntersects, bboxUnion, type BBox } from './geom';
 import { strokeGeometry } from './ink';
 import type { Minimap } from './minimap';
 import {
@@ -24,13 +24,58 @@ export class Renderer {
   private sceneCanvas: HTMLCanvasElement | null = null;
   private sceneCtx: CanvasRenderingContext2D | null = null;
   private sceneCacheKey = '';
+  private cachedBaseKeyNoVer = '';
+  private cachedSceneVersion = -1;
   private cachedCamX = 0;
   private cachedCamY = 0;
   private cachedPadX = 0;
   private cachedPadY = 0;
+  private pendingDirtyBBox: BBox | null = null;
+  private pendingDirtyFromVer = -1;
+  private pendingDirtyToVer = -1;
+
+  private clearPendingDirty() {
+    this.pendingDirtyBBox = null;
+    this.pendingDirtyFromVer = -1;
+    this.pendingDirtyToVer = -1;
+  }
 
   invalidateCache() {
     this.sceneCacheKey = '';
+    this.cachedBaseKeyNoVer = '';
+    this.cachedSceneVersion = -1;
+    this.clearPendingDirty();
+  }
+
+  markSceneDirtyRect(bbox: BBox, fromVersion: number, toVersion: number) {
+    if (this.pendingDirtyFromVer === -1) {
+      if (fromVersion === this.cachedSceneVersion) {
+        this.pendingDirtyFromVer = fromVersion;
+        this.pendingDirtyToVer = toVersion;
+        this.pendingDirtyBBox = [bbox[0], bbox[1], bbox[2], bbox[3]];
+      }
+    } else if (this.pendingDirtyToVer === fromVersion) {
+      this.pendingDirtyToVer = toVersion;
+      this.pendingDirtyBBox = this.pendingDirtyBBox
+        ? bboxUnion(this.pendingDirtyBBox, bbox)
+        : [bbox[0], bbox[1], bbox[2], bbox[3]];
+    } else {
+      this.clearPendingDirty();
+    }
+  }
+
+  markSceneVersionUnchanged(fromVersion: number, toVersion: number) {
+    if (this.pendingDirtyFromVer === -1) {
+      if (fromVersion === this.cachedSceneVersion) {
+        this.pendingDirtyFromVer = fromVersion;
+        this.pendingDirtyToVer = toVersion;
+        this.pendingDirtyBBox = null;
+      }
+    } else if (this.pendingDirtyToVer === fromVersion) {
+      this.pendingDirtyToVer = toVersion;
+    } else {
+      this.clearPendingDirty();
+    }
   }
 
   addLaser(x: number, y: number, color = '#ff1744') {
@@ -60,6 +105,7 @@ export class Renderer {
     assetsVersion?: number,
     activeTransformIds?: Set<string> | null,
     transformSessionId?: number,
+    isErasingActive = false,
   ) {
     const dpr = window.devicePixelRatio || 1;
     const canvasW = ctx.canvas.width;
@@ -80,7 +126,8 @@ export class Renderer {
     const smoothingMode = settings.smoothing || 'balanced';
     const hasActiveTransform = !!(activeTransformIds && activeTransformIds.size > 0);
     const versionTag = hasActiveTransform ? `tx${transformSessionId ?? 0}` : `sv${sVer}`;
-    const baseCacheKey = `${bufW}x${bufH}_${camera.zoom.toFixed(4)}_${settings.dark}_${smoothingMode}_${versionTag}_av${aVer}`;
+    const baseKeyNoVer = `${bufW}x${bufH}_${camera.zoom.toFixed(4)}_${settings.dark}_${smoothingMode}_av${aVer}`;
+    const baseCacheKey = `${baseKeyNoVer}_${versionTag}`;
 
     const withinOverscan =
       Math.abs(camera.x - this.cachedCamX) <= this.cachedPadX &&
@@ -92,51 +139,127 @@ export class Renderer {
       withinOverscan;
 
     if (!canUseCache) {
-      if (!this.sceneCanvas) {
-        this.sceneCanvas = document.createElement('canvas');
+      const canIncrementalPatch =
+        !hasActiveTransform &&
+        this.sceneCanvas !== null &&
+        this.sceneCtx !== null &&
+        withinOverscan &&
+        this.cachedPadX === padX &&
+        this.cachedPadY === padY &&
+        this.cachedBaseKeyNoVer === baseKeyNoVer &&
+        this.pendingDirtyFromVer !== -1 &&
+        this.pendingDirtyFromVer === this.cachedSceneVersion &&
+        this.pendingDirtyToVer === sVer;
+
+      if (canIncrementalPatch) {
+        const dirty = this.pendingDirtyBBox;
+        this.clearPendingDirty();
+
+        if (dirty) {
+          const sCtx = this.sceneCtx!;
+          const worldPad = Math.max(12, 16 / camera.zoom);
+          const originX = this.cachedCamX + this.cachedPadX;
+          const originY = this.cachedCamY + this.cachedPadY;
+
+          const rawX0 = (dirty[0] - worldPad) * camera.zoom + originX;
+          const rawY0 = (dirty[1] - worldPad) * camera.zoom + originY;
+          const rawX1 = (dirty[2] + worldPad) * camera.zoom + originX;
+          const rawY1 = (dirty[3] + worldPad) * camera.zoom + originY;
+
+          // Clamp to buffer and snap to exact device-pixel boundaries to prevent sub-pixel seams
+          const clipX0 = Math.max(0, Math.floor(rawX0 * dpr) / dpr);
+          const clipY0 = Math.max(0, Math.floor(rawY0 * dpr) / dpr);
+          const clipX1 = Math.min(bufCssW, Math.ceil(rawX1 * dpr) / dpr);
+          const clipY1 = Math.min(bufCssH, Math.ceil(rawY1 * dpr) / dpr);
+          const clipW = clipX1 - clipX0;
+          const clipH = clipY1 - clipY0;
+
+          if (clipW > 0 && clipH > 0) {
+            sCtx.save();
+            sCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            sCtx.beginPath();
+            sCtx.rect(clipX0, clipY0, clipW, clipH);
+            sCtx.clip();
+            sCtx.clearRect(clipX0, clipY0, clipW, clipH);
+
+            sCtx.translate(originX, originY);
+            sCtx.scale(camera.zoom, camera.zoom);
+
+            const queryPad = Math.max(16, 28 / camera.zoom);
+            const queryBBox: BBox = [
+              (clipX0 - originX) / camera.zoom - queryPad,
+              (clipY0 - originY) / camera.zoom - queryPad,
+              (clipX1 - originX) / camera.zoom + queryPad,
+              (clipY1 - originY) / camera.zoom + queryPad,
+            ];
+
+            this.renderLayerObjects(
+              sCtx,
+              objects,
+              queryBBox,
+              camera.zoom,
+              settings.dark,
+              assets,
+              smoothingMode,
+              null,
+              false,
+            );
+            sCtx.restore();
+          }
+        }
+
+        this.sceneCacheKey = baseCacheKey;
+        this.cachedSceneVersion = sVer;
+      } else {
+        this.clearPendingDirty();
+        if (!this.sceneCanvas) {
+          this.sceneCanvas = document.createElement('canvas');
+        }
+        if (this.sceneCanvas.width !== bufW || this.sceneCanvas.height !== bufH) {
+          this.sceneCanvas.width = bufW;
+          this.sceneCanvas.height = bufH;
+          this.sceneCtx = this.sceneCanvas.getContext('2d');
+        }
+        if (!this.sceneCtx) {
+          this.sceneCtx = this.sceneCanvas.getContext('2d');
+        }
+
+        const sCtx = this.sceneCtx!;
+        sCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        sCtx.clearRect(0, 0, bufCssW, bufCssH);
+
+        sCtx.save();
+        sCtx.translate(camera.x + padX, camera.y + padY);
+        sCtx.scale(camera.zoom, camera.zoom);
+
+        // Visible viewport in world coordinates (including overscan margin)
+        const vLeft = (-camera.x - padX) / camera.zoom;
+        const vTop = (-camera.y - padY) / camera.zoom;
+        const vRight = (cssW + padX - camera.x) / camera.zoom;
+        const vBottom = (cssH + padY - camera.y) / camera.zoom;
+        const viewBBox: BBox = [vLeft - 80, vTop - 80, vRight + 80, vBottom + 80];
+
+        this.renderLayerObjects(
+          sCtx,
+          objects,
+          viewBBox,
+          camera.zoom,
+          settings.dark,
+          assets,
+          smoothingMode,
+          hasActiveTransform ? activeTransformIds! : null,
+          false,
+        );
+
+        sCtx.restore();
+        this.sceneCacheKey = baseCacheKey;
+        this.cachedBaseKeyNoVer = hasActiveTransform ? '' : baseKeyNoVer;
+        this.cachedSceneVersion = hasActiveTransform ? -1 : sVer;
+        this.cachedCamX = camera.x;
+        this.cachedCamY = camera.y;
+        this.cachedPadX = padX;
+        this.cachedPadY = padY;
       }
-      if (this.sceneCanvas.width !== bufW || this.sceneCanvas.height !== bufH) {
-        this.sceneCanvas.width = bufW;
-        this.sceneCanvas.height = bufH;
-        this.sceneCtx = this.sceneCanvas.getContext('2d');
-      }
-      if (!this.sceneCtx) {
-        this.sceneCtx = this.sceneCanvas.getContext('2d');
-      }
-
-      const sCtx = this.sceneCtx!;
-      sCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      sCtx.clearRect(0, 0, bufCssW, bufCssH);
-
-      sCtx.save();
-      sCtx.translate(camera.x + padX, camera.y + padY);
-      sCtx.scale(camera.zoom, camera.zoom);
-
-      // Visible viewport in world coordinates (including overscan margin)
-      const vLeft = (-camera.x - padX) / camera.zoom;
-      const vTop = (-camera.y - padY) / camera.zoom;
-      const vRight = (cssW + padX - camera.x) / camera.zoom;
-      const vBottom = (cssH + padY - camera.y) / camera.zoom;
-      const viewBBox: BBox = [vLeft - 80, vTop - 80, vRight + 80, vBottom + 80];
-
-      this.renderLayerObjects(
-        sCtx,
-        objects,
-        viewBBox,
-        camera.zoom,
-        settings.dark,
-        assets,
-        smoothingMode,
-        hasActiveTransform ? activeTransformIds! : null,
-        false,
-      );
-
-      sCtx.restore();
-      this.sceneCacheKey = baseCacheKey;
-      this.cachedCamX = camera.x;
-      this.cachedCamY = camera.y;
-      this.cachedPadX = padX;
-      this.cachedPadY = padY;
     }
 
     // 1. Render background directly to screen
@@ -241,7 +364,7 @@ export class Renderer {
     // 3. Screen overlays (Ruler, Radial menu, Minimap)
     ruler.render(ctx);
     radial.render(ctx);
-    minimap.render(ctx, camera, objects, cssW, cssH, settings.dark, assets, sVer, settings.dockPosition || 'bottom');
+    minimap.render(ctx, camera, objects, cssW, cssH, settings.dark, assets, sVer, settings.dockPosition || 'bottom', isErasingActive);
   }
 
   private renderLayerObjects(

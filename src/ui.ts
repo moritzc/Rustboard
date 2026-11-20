@@ -2,13 +2,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import type { Assets } from './assets';
 import { exportAnnotatedPdfRoundTrip, exportPdf, exportToSvg } from './export';
-import { getTaskbarPrefsSync, loadBoard, saveBoard, saveTaskbarPrefs, scheduleAutosave } from './file_io';
+import { getTaskbarPrefsSync, loadBoard, saveBoard, saveTaskbarPrefs, scheduleAutosave, spawnNewInstanceWithObjects } from './file_io';
 import type { InputManager } from './input';
 import type { Minimap } from './minimap';
-import { bboxOf, selectionFrame, textHeight } from './objects';
+import { bboxOf, boxOf, insideFrame, selectionFrame, textHeight, translateObj } from './objects';
 import type { Ruler } from './ruler';
 import type { Scene } from './scene';
-import type { BoardSettings, Camera, DockPosition, FrameObj, LineDash, ShapeKind, ShapeTool, TaskbarPrefs, TextObj, Tool } from './types';
+import type { BoardSettings, Camera, DockPosition, FrameObj, LineDash, Obj, ShapeKind, ShapeTool, TaskbarPrefs, TextObj, Tool } from './types';
 import { uid } from './types';
 import { layoutText, measureWidth } from './textlayout';
 
@@ -138,6 +138,9 @@ export class UIManager {
         <div class="divider"></div>
         <button class="tool-btn" id="btn-sel-dup" title="Duplicate (Ctrl+D)">
           <svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
+        <button class="tool-btn" id="btn-sel-new-board" title="Open Selection in New Whiteboard">
+          <svg viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
         </button>
         <button class="tool-btn" id="btn-sel-lock" title="Lock / Unlock (Ctrl+L)">
           <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
@@ -368,6 +371,10 @@ export class UIManager {
       this.showFrameDeleteDialog(onOnly, onAll);
     };
 
+    this.input.onSelectPdfPages = (assetId, name, pageCount) => {
+      return this.showPdfPagePickerDialog(assetId, name, pageCount);
+    };
+
     // New Board button
     this.container.querySelector('#btn-new')?.addEventListener('click', () => {
       if (this.scene.dirty && this.scene.objects.length > 0) {
@@ -390,6 +397,9 @@ export class UIManager {
     this.container.querySelector('#btn-sel-dup')?.addEventListener('click', () => {
       this.input.duplicateSelection();
       this.updateSelectionToolbar();
+    });
+    this.container.querySelector('#btn-sel-new-board')?.addEventListener('click', () => {
+      void this.openSelectionInNewBoard();
     });
     this.container.querySelector('#btn-sel-lock')?.addEventListener('click', () => {
       this.input.toggleLockSelection();
@@ -515,6 +525,10 @@ export class UIManager {
   }
 
   private zoomToFit() {
+    this.fitLoadedContent(3);
+  }
+
+  fitLoadedContent(maxZoom = 1) {
     if (this.scene.objects.length === 0) return;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const o of this.scene.objects) {
@@ -525,14 +539,64 @@ export class UIManager {
       if (b[3] > maxY) maxY = b[3];
     }
     const pad = 60;
-    const w = maxX - minX + pad * 2;
-    const h = maxY - minY + pad * 2;
+    const w = Math.max(1, maxX - minX + pad * 2);
+    const h = Math.max(1, maxY - minY + pad * 2);
     const scale = Math.min((window.innerWidth - 100) / w, (window.innerHeight - 100) / h);
-    this.camera.zoom = Math.max(0.1, Math.min(3, scale));
+    this.camera.zoom = Math.max(0.1, Math.min(maxZoom, scale));
     this.camera.x = window.innerWidth / 2 - ((minX + maxX) / 2) * this.camera.zoom;
     this.camera.y = window.innerHeight / 2 - ((minY + maxY) / 2) * this.camera.zoom;
     this.updateZoomDisplay();
     this.onNeedRender();
+  }
+
+  private async openSelectionInNewBoard() {
+    if (this.input.selectedIds.size === 0) return;
+
+    const includeIds = new Set<string>(this.input.selectedIds);
+    for (const id of this.input.selectedIds) {
+      const o = this.scene.get(id);
+      if (o && o.type === 'frame') {
+        const fBox = boxOf(o);
+        for (const other of this.scene.objects) {
+          if (insideFrame(other, fBox)) {
+            includeIds.add(other.id);
+          }
+        }
+      }
+    }
+
+    const selectedObjs: Obj[] = this.scene.objects.filter((o) => includeIds.has(o.id));
+    if (selectedObjs.length === 0) return;
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const o of selectedObjs) {
+      const b = bboxOf(o);
+      if (b[0] < minX) minX = b[0];
+      if (b[1] < minY) minY = b[1];
+      if (b[2] > maxX) maxX = b[2];
+      if (b[3] > maxY) maxY = b[3];
+    }
+    const cx = isFinite(minX) ? (minX + maxX) / 2 : 0;
+    const cy = isFinite(minY) ? (minY + maxY) / 2 : 0;
+    const centeredObjs = selectedObjs.map((o) => translateObj(o, -cx, -cy));
+
+    const pad = 60;
+    const w = Math.max(1, maxX - minX + pad * 2);
+    const h = Math.max(1, maxY - minY + pad * 2);
+    const fitScale = Math.min((window.innerWidth - 100) / w, (window.innerHeight - 100) / h);
+    const newZoom = Math.max(0.1, Math.min(1, fitScale));
+    const newCamera: Camera = {
+      x: window.innerWidth / 2,
+      y: window.innerHeight / 2,
+      zoom: newZoom,
+    };
+
+    try {
+      await spawnNewInstanceWithObjects(centeredObjs, this.assets, newCamera, { ...this.settings });
+    } catch (err) {
+      console.error('Failed to open selection in new whiteboard:', err);
+      alert(`Could not open new whiteboard: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   async handleSave(): Promise<boolean> {
@@ -1357,6 +1421,274 @@ export class UIManager {
     if (isNew) {
       textarea.select();
     }
+  }
+
+  private parsePageRange(raw: string, maxPage: number): Set<number> | null {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    const out = new Set<number>();
+    const parts = trimmed.split(/[,;]+/);
+    for (const part of parts) {
+      const token = part.trim();
+      if (!token) continue;
+      const rangeMatch = /^(\d+)\s*-\s*(\d+)$/.exec(token);
+      if (rangeMatch) {
+        const a = Number(rangeMatch[1]);
+        const b = Number(rangeMatch[2]);
+        if (!Number.isInteger(a) || !Number.isInteger(b) || a < 1 || b < 1 || a > maxPage || b > maxPage) {
+          return null;
+        }
+        const lo = Math.min(a, b);
+        const hi = Math.max(a, b);
+        for (let p = lo; p <= hi; p++) out.add(p - 1);
+      } else if (/^\d+$/.test(token)) {
+        const p = Number(token);
+        if (!Number.isInteger(p) || p < 1 || p > maxPage) return null;
+        out.add(p - 1);
+      } else {
+        return null;
+      }
+    }
+    return out.size > 0 ? out : null;
+  }
+
+  showPdfPagePickerDialog(assetId: string, name: string, pageCount: number): Promise<number[] | null> {
+    return new Promise((resolve) => {
+      const selected = new Set<number>();
+      for (let i = 0; i < pageCount; i++) selected.add(i);
+
+      const modal = document.createElement('div');
+      modal.className = 'modal-overlay';
+      modal.innerHTML = `
+        <div class="modal-box pdf-picker-modal">
+          <div class="modal-header" style="margin-bottom: 10px;">
+            <div>
+              <div class="modal-title">Import PDF Pages</div>
+              <div class="pdf-picker-subtitle">${escapeXml(name)} &middot; ${pageCount} pages</div>
+            </div>
+            <button class="modal-close" title="Cancel">&times;</button>
+          </div>
+
+          <div class="pdf-picker-controls">
+            <div class="pdf-range-wrap">
+              <input type="text" class="pdf-range-input" id="pdf-range-input" placeholder="Page range, e.g. 1-3, 5, 8-${Math.min(10, pageCount)}" />
+              <button class="chip-btn" id="pdf-range-apply">Apply</button>
+            </div>
+            <div class="pdf-quick-actions">
+              <button class="chip-btn" id="pdf-sel-all">Select All</button>
+              <button class="chip-btn" id="pdf-sel-none">Deselect All</button>
+              <button class="chip-btn" id="pdf-sel-invert">Invert</button>
+            </div>
+          </div>
+          <div class="pdf-range-error" id="pdf-range-error" style="display: none;"></div>
+
+          <div class="pdf-page-grid" id="pdf-page-grid">
+            ${Array.from({ length: pageCount }, (_, i) => `
+              <div class="pdf-page-card selected" data-page="${i}" role="button" tabindex="0">
+                <div class="pdf-thumb-wrap">
+                  <span class="pdf-thumb-placeholder">${i + 1}</span>
+                </div>
+                <div class="pdf-page-check">&#10003;</div>
+                <div class="pdf-page-label">Page ${i + 1}</div>
+              </div>
+            `).join('')}
+          </div>
+
+          <div class="pdf-picker-footer">
+            <div class="pdf-picker-status">
+              <strong id="pdf-sel-count">${pageCount} of ${pageCount} pages selected</strong>
+              <span class="pdf-picker-hint">Click to toggle &middot; Shift+Click for a range</span>
+            </div>
+            <div class="pdf-picker-actions">
+              <button class="modal-btn btn-secondary" id="pdf-cancel" style="width: auto; margin-top: 0; padding: 9px 18px;">Cancel</button>
+              <button class="modal-btn btn-primary" id="pdf-import" style="width: auto; margin-top: 0; padding: 9px 20px;">Import ${pageCount} Pages</button>
+            </div>
+          </div>
+        </div>
+      `;
+
+      document.body.appendChild(modal);
+
+      let finished = false;
+      let cancelled = false;
+      let lastClickedIdx: number | null = null;
+
+      const grid = modal.querySelector<HTMLDivElement>('#pdf-page-grid')!;
+      const cards = Array.from(grid.querySelectorAll<HTMLDivElement>('.pdf-page-card'));
+      const countEl = modal.querySelector<HTMLElement>('#pdf-sel-count')!;
+      const importBtn = modal.querySelector<HTMLButtonElement>('#pdf-import')!;
+      const rangeInput = modal.querySelector<HTMLInputElement>('#pdf-range-input')!;
+      const rangeError = modal.querySelector<HTMLDivElement>('#pdf-range-error')!;
+
+      const syncUI = () => {
+        for (let i = 0; i < cards.length; i++) {
+          cards[i].classList.toggle('selected', selected.has(i));
+        }
+        const n = selected.size;
+        countEl.textContent = `${n} of ${pageCount} ${pageCount === 1 ? 'page' : 'pages'} selected`;
+        importBtn.disabled = n === 0;
+        importBtn.textContent = n === pageCount
+          ? `Import All (${n})`
+          : `Import ${n} ${n === 1 ? 'Page' : 'Pages'}`;
+      };
+
+      // Lazy thumbnail renderer using IntersectionObserver + sequential queue
+      const renderedPages = new Set<number>();
+      const renderQueue: number[] = [];
+      const queuedPages = new Set<number>();
+      let pumping = false;
+
+      const pumpThumbnails = async () => {
+        if (pumping) return;
+        pumping = true;
+        try {
+          while (!cancelled && renderQueue.length > 0) {
+            const pageIdx = renderQueue.shift()!;
+            queuedPages.delete(pageIdx);
+            if (renderedPages.has(pageIdx)) continue;
+            try {
+              const cvs = await this.assets.renderThumbnail(assetId, pageIdx, 220);
+              if (cancelled) break;
+              renderedPages.add(pageIdx);
+              const wrap = cards[pageIdx]?.querySelector<HTMLDivElement>('.pdf-thumb-wrap');
+              if (wrap) {
+                wrap.innerHTML = '';
+                cvs.className = 'pdf-thumb-canvas';
+                wrap.appendChild(cvs);
+              }
+            } catch {
+              /* ignore individual thumbnail errors */
+            }
+          }
+        } finally {
+          pumping = false;
+        }
+      };
+
+      const observer = new IntersectionObserver(
+        (entries) => {
+          if (cancelled) return;
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            const pageIdx = Number((entry.target as HTMLElement).dataset.page);
+            if (!renderedPages.has(pageIdx) && !queuedPages.has(pageIdx)) {
+              queuedPages.add(pageIdx);
+              renderQueue.push(pageIdx);
+            }
+          }
+          if (renderQueue.length > 0) void pumpThumbnails();
+        },
+        { root: grid, rootMargin: '160px 0px' },
+      );
+
+      for (const card of cards) observer.observe(card);
+
+      const cleanupAndResolve = (result: number[] | null) => {
+        if (finished) return;
+        finished = true;
+        cancelled = true;
+        observer.disconnect();
+        window.removeEventListener('keydown', onKeyDown, true);
+        modal.remove();
+        resolve(result);
+      };
+
+      const confirmImport = () => {
+        if (selected.size === 0) return;
+        const sorted = Array.from(selected).sort((a, b) => a - b);
+        cleanupAndResolve(sorted);
+      };
+
+      const applyRange = () => {
+        const parsed = this.parsePageRange(rangeInput.value, pageCount);
+        if (!parsed) {
+          rangeError.textContent = `Enter page numbers or ranges between 1 and ${pageCount} (e.g. 1-3, 5, 8-${Math.min(10, pageCount)}).`;
+          rangeError.style.display = 'block';
+          return;
+        }
+        rangeError.style.display = 'none';
+        selected.clear();
+        for (const p of parsed) selected.add(p);
+        syncUI();
+        const first = Math.min(...parsed);
+        cards[first]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      };
+
+      const onKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          cleanupAndResolve(null);
+        } else if (e.key === 'Enter' && document.activeElement !== rangeInput) {
+          e.preventDefault();
+          e.stopPropagation();
+          confirmImport();
+        }
+      };
+      window.addEventListener('keydown', onKeyDown, true);
+
+      grid.addEventListener('click', (e) => {
+        const card = (e.target as HTMLElement).closest<HTMLDivElement>('.pdf-page-card');
+        if (!card) return;
+        const idx = Number(card.dataset.page);
+        rangeError.style.display = 'none';
+
+        if (e.shiftKey && lastClickedIdx !== null) {
+          const targetState = !selected.has(idx);
+          const lo = Math.min(lastClickedIdx, idx);
+          const hi = Math.max(lastClickedIdx, idx);
+          for (let p = lo; p <= hi; p++) {
+            if (targetState) selected.add(p);
+            else selected.delete(p);
+          }
+        } else {
+          if (selected.has(idx)) selected.delete(idx);
+          else selected.add(idx);
+        }
+        lastClickedIdx = idx;
+        syncUI();
+      });
+
+      modal.querySelector('#pdf-range-apply')?.addEventListener('click', applyRange);
+      rangeInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          e.stopPropagation();
+          applyRange();
+        }
+      });
+      rangeInput.addEventListener('input', () => {
+        rangeError.style.display = 'none';
+      });
+
+      modal.querySelector('#pdf-sel-all')?.addEventListener('click', () => {
+        rangeError.style.display = 'none';
+        for (let i = 0; i < pageCount; i++) selected.add(i);
+        syncUI();
+      });
+      modal.querySelector('#pdf-sel-none')?.addEventListener('click', () => {
+        rangeError.style.display = 'none';
+        selected.clear();
+        syncUI();
+      });
+      modal.querySelector('#pdf-sel-invert')?.addEventListener('click', () => {
+        rangeError.style.display = 'none';
+        for (let i = 0; i < pageCount; i++) {
+          if (selected.has(i)) selected.delete(i);
+          else selected.add(i);
+        }
+        syncUI();
+      });
+
+      modal.querySelector('.modal-close')?.addEventListener('click', () => cleanupAndResolve(null));
+      modal.querySelector('#pdf-cancel')?.addEventListener('click', () => cleanupAndResolve(null));
+      importBtn.addEventListener('click', confirmImport);
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) cleanupAndResolve(null);
+      });
+
+      syncUI();
+    });
   }
 
   showFrameDeleteDialog(onDeleteFrameOnly: () => void, onDeleteFrameAndContent: () => void) {

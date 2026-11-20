@@ -85,6 +85,38 @@ export class Assets {
     return a;
   }
 
+  hasMatchingBytes(bytes: Uint8Array, mime: string): boolean {
+    const resolvedMime = mime === 'application/pdf' ? mime : detectImageMime(bytes, mime);
+    for (const a of this.map.values()) {
+      if (a.bytes.length === bytes.length && a.mime === resolvedMime && equalBytes(a.bytes, bytes)) return true;
+    }
+    return false;
+  }
+
+  remove(id: string) {
+    this.map.delete(id);
+    const img = this.images.get(id);
+    if (img && 'close' in img) img.close();
+    this.images.delete(id);
+    this.loading.delete(id);
+    const pdf = this.pdfDocs.get(id);
+    if (pdf) {
+      pdf.then((d) => d.destroy()).catch(() => {});
+      this.pdfDocs.delete(id);
+    }
+    const prefix = `${id}:`;
+    for (const [k, e] of [...this.pages.entries()]) {
+      if (k.startsWith(prefix)) {
+        e.canvas.width = e.canvas.height = 0;
+        this.pages.delete(k);
+      }
+    }
+    for (const k of [...this.queue.keys()]) {
+      if (k.startsWith(prefix)) this.queue.delete(k);
+    }
+    this.dataUrls.delete(id);
+  }
+
   get(id: string) {
     return this.map.get(id);
   }
@@ -225,6 +257,22 @@ export class Assets {
     const canvas = document.createElement('canvas');
     canvas.width = Math.ceil(vp.width);
     canvas.height = Math.ceil(vp.height);
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await p.render({ canvasContext: ctx, viewport: vp }).promise;
+    return canvas;
+  }
+
+  async renderThumbnail(asset: string, page: number, maxDim = 220): Promise<HTMLCanvasElement> {
+    const doc = await this.pdf(asset);
+    const p = await doc.getPage(page + 1);
+    const baseVp = p.getViewport({ scale: 1 });
+    const scale = Math.max(0.12, Math.min(0.8, maxDim / Math.max(baseVp.width, baseVp.height, 1)));
+    const vp = p.getViewport({ scale });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.ceil(vp.width));
+    canvas.height = Math.max(1, Math.ceil(vp.height));
     const ctx = canvas.getContext('2d')!;
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);

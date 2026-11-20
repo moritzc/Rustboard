@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { Assets } from './assets';
-import { eraseObjectsAt, type EraserState } from './eraser';
+import { eraseObjectsAlongSegment, type EraserState } from './eraser';
 import {
   apply, type BBox, compose, dist, normAngle, pointInPoly, rotateM, rotPt, scaleM, translate,
 } from './geom';
@@ -34,6 +34,7 @@ export class InputManager {
   onToolChanged?: (tool: Tool) => void;
   onEditText?: (obj: TextObj, isNew: boolean) => void;
   onPromptDeleteFrame?: (onDeleteFrameOnly: () => void, onDeleteFrameAndContent: () => void) => void;
+  onSelectPdfPages?: (assetId: string, name: string, pageCount: number) => Promise<number[] | null>;
 
   // Shape tool settings
   shapeTool: ShapeTool = 'rect';
@@ -58,6 +59,9 @@ export class InputManager {
   // Eraser state (velocity-adaptive circle indicator & slicing)
   eraserState: EraserState = { active: false, x: 0, y: 0, radius: 16 };
   private eraserActive = false;
+  get isErasingActive(): boolean {
+    return this.eraserActive;
+  }
   private eraserInitialObjs: Obj[] | null = null;
   private lastEraserPoint = { x: 0, y: 0, time: 0 };
   private eraserSpeed = 0;
@@ -768,17 +772,23 @@ export class InputManager {
       radius: worldRadius,
     };
 
-    const res = eraseObjectsAt(this.scene.objects, wx, wy, worldRadius);
+    const res = eraseObjectsAlongSegment(this.scene.objects, wx, wy, wx, wy, worldRadius);
     if (res.changed) {
+      const prevVer = this.scene.version;
       this.scene.transient(res.remaining);
-      let selChanged = false;
-      for (const id of this.selectedIds) {
-        if (!res.remaining.some((o) => o.id === id)) {
-          this.selectedIds.delete(id);
-          selChanged = true;
-        }
+      if (res.dirtyBBox) {
+        (this as any).renderer?.markSceneDirtyRect(res.dirtyBBox, prevVer, this.scene.version);
       }
-      if (selChanged) this.onSelectionChanged(this.selectedIds);
+      if (this.selectedIds.size > 0) {
+        let selChanged = false;
+        for (const id of this.selectedIds) {
+          if (!this.scene.get(id)) {
+            this.selectedIds.delete(id);
+            selChanged = true;
+          }
+        }
+        if (selChanged) this.onSelectionChanged(this.selectedIds);
+      }
     }
     this.onNeedRender();
   }
@@ -831,35 +841,32 @@ export class InputManager {
     this.eraserState.y = wy;
     this.eraserState.radius = worldRadius;
 
-    // Interpolate steps along path so fast sweeps do not leave gaps
-    const worldDist = Math.hypot(wx - this.lastEraserPoint.x, wy - this.lastEraserPoint.y);
-    const stepSize = Math.max(3 / this.camera.zoom, worldRadius * 0.35);
-    const steps = Math.max(1, Math.ceil(worldDist / stepSize));
+    // Single-pass continuous swept capsule erase along path (no gaps, zero per-step scene rescans)
+    const res = eraseObjectsAlongSegment(
+      this.scene.objects,
+      this.lastEraserPoint.x,
+      this.lastEraserPoint.y,
+      wx,
+      wy,
+      worldRadius,
+    );
 
-    let changedAny = false;
-    let currentObjs = this.scene.objects;
-
-    for (let s = 1; s <= steps; s++) {
-      const t = s / steps;
-      const ix = this.lastEraserPoint.x + (wx - this.lastEraserPoint.x) * t;
-      const iy = this.lastEraserPoint.y + (wy - this.lastEraserPoint.y) * t;
-      const res = eraseObjectsAt(currentObjs, ix, iy, worldRadius);
-      if (res.changed) {
-        changedAny = true;
-        currentObjs = res.remaining;
+    if (res.changed) {
+      const prevVer = this.scene.version;
+      this.scene.transient(res.remaining);
+      if (res.dirtyBBox) {
+        (this as any).renderer?.markSceneDirtyRect(res.dirtyBBox, prevVer, this.scene.version);
       }
-    }
-
-    if (changedAny) {
-      this.scene.transient(currentObjs);
-      let selChanged = false;
-      for (const id of this.selectedIds) {
-        if (!currentObjs.some((o) => o.id === id)) {
-          this.selectedIds.delete(id);
-          selChanged = true;
+      if (this.selectedIds.size > 0) {
+        let selChanged = false;
+        for (const id of this.selectedIds) {
+          if (!this.scene.get(id)) {
+            this.selectedIds.delete(id);
+            selChanged = true;
+          }
         }
+        if (selChanged) this.onSelectionChanged(this.selectedIds);
       }
-      if (selChanged) this.onSelectionChanged(this.selectedIds);
     }
 
     this.lastEraserPoint = { x: wx, y: wy, time: now };
@@ -875,7 +882,9 @@ export class InputManager {
       this.eraserStrokeDist = 0;
       if (this.eraserInitialObjs) {
         if (this.scene.objects !== this.eraserInitialObjs) {
+          const prevVer = this.scene.version;
           this.scene.commit(this.scene.objects, this.eraserInitialObjs);
+          (this as any).renderer?.markSceneVersionUnchanged(prevVer, this.scene.version);
         }
         this.eraserInitialObjs = null;
       }
@@ -1488,17 +1497,37 @@ export class InputManager {
     this.onNeedRender();
   }
 
-  async insertPdfBytes(bytes: Uint8Array, name: string) {
+  async insertPdfBytes(bytes: Uint8Array, name: string, pageIndices?: number[]) {
+    const existedBefore = this.assets.hasMatchingBytes(bytes, 'application/pdf');
     const asset = this.assets.add(bytes, 'application/pdf', name);
     const info = await this.assets.pageInfo(asset.id);
+
+    let chosenPages: number[];
+    if (pageIndices) {
+      chosenPages = pageIndices.filter((p) => p >= 0 && p < info.count);
+    } else if (info.count > 1 && this.onSelectPdfPages) {
+      const picked = await this.onSelectPdfPages(asset.id, name, info.count);
+      if (!picked || picked.length === 0) {
+        const stillReferenced = this.scene.objects.some((o) => o.type === 'pdfpage' && o.asset === asset.id);
+        if (!existedBefore && !stillReferenced) {
+          this.assets.remove(asset.id);
+        }
+        return;
+      }
+      chosenPages = picked;
+    } else {
+      chosenPages = Array.from({ length: info.count }, (_, i) => i);
+    }
+
+    if (chosenPages.length === 0) return;
 
     const [curX, topY] = this.screenToWorld(window.innerWidth / 2, 80);
     let curY = topY;
     const objs: PdfPageObj[] = [];
 
-    // Place pages vertically with neat margin
-    for (let i = 0; i < info.count; i++) {
-      const size = await info.sizes(i);
+    // Place selected pages vertically with neat margin
+    for (const pageIdx of chosenPages) {
+      const size = await info.sizes(pageIdx);
       const w = size.w * PT;
       const h = size.h * PT;
 
@@ -1506,7 +1535,7 @@ export class InputManager {
         id: uid(),
         type: 'pdfpage',
         asset: asset.id,
-        page: i,
+        page: pageIdx,
         pw: size.w,
         ph: size.h,
         x: curX - w / 2,

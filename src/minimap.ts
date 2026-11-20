@@ -37,6 +37,7 @@ export class Minimap {
     assets?: Assets,
     sceneVersion = 0,
     dockPosition: DockPosition = 'bottom',
+    deferCacheUpdate = false,
   ) {
     if (!this.visible) return;
 
@@ -53,8 +54,8 @@ export class Minimap {
       this.y = canvasH - this.h - 80;
     }
 
-    // 1. Update cached object union bounds only when sceneVersion changes
-    if (this.lastSceneVersion !== sceneVersion) {
+    // 1. Update cached object union bounds only when sceneVersion changes (defer during active erase drags)
+    if (this.lastSceneVersion !== sceneVersion && (!deferCacheUpdate || !this.cacheCanvas)) {
       this.lastSceneVersion = sceneVersion;
       if (objects.length === 0) {
         this.cachedObjBounds = null;
@@ -123,7 +124,7 @@ export class Minimap {
     const aVer = assets?.version ?? 0;
     const key = `${pw}x${ph}_sv${sceneVersion}_av${aVer}_${dark}_${minX.toFixed(0)}_${minY.toFixed(0)}_${maxX.toFixed(0)}_${maxY.toFixed(0)}`;
 
-    if (this.cacheKey !== key || !this.cacheCanvas) {
+    if ((this.cacheKey !== key && !deferCacheUpdate) || !this.cacheCanvas) {
       if (!this.cacheCanvas) {
         this.cacheCanvas = document.createElement('canvas');
       }

@@ -123,6 +123,7 @@ async function bootstrap() {
         assets.version,
         input.activeTransformIds,
         input.transformSessionId,
+        input.isErasingActive,
       );
       if (Math.abs(camera.zoom - lastZoom) > 0.001) {
         lastZoom = camera.zoom;
@@ -144,44 +145,60 @@ async function bootstrap() {
     ui.applyPrefs(diskPrefs);
     requestRender();
 
-    const startupFile = await invoke<string | null>('get_startup_file');
-    if (startupFile) {
-      if (startupFile.toLowerCase().endsWith('.rboard')) {
-        const res = await loadBoard(startupFile, scene, assets);
+    const selectionBoard = await invoke<string | null>('get_startup_selection_board');
+    if (selectionBoard) {
+      try {
+        const res = await loadBoard(selectionBoard, scene, assets);
         Object.assign(camera, res.camera);
         Object.assign(settings, res.settings);
         settings.dockPosition = diskPrefs.dockPosition || 'bottom';
         document.body.classList.toggle('dark', settings.dark);
         ui.applyPrefs(diskPrefs);
+        ui.fitLoadedContent(1);
         requestRender();
-      } else if (startupFile.toLowerCase().endsWith('.pdf')) {
-        const bytes = await invoke<number[]>('read_file', { path: startupFile });
-        const name = startupFile.split(/[\\/]/).pop() || 'startup.pdf';
-        await input.insertPdfBytes(new Uint8Array(bytes), name);
+      } finally {
+        invoke('delete_file', { path: selectionBoard }).catch(() => {});
       }
     } else {
-      // Check for recovery file
-      const rec = await checkCrashRecovery();
-      if (rec) {
-        ui.showStartupDialog(
-          async () => {
-            try {
-              const res = await loadBoard(rec, scene, assets);
-              const latestPrefs = getTaskbarPrefsSync();
-              Object.assign(camera, res.camera);
-              Object.assign(settings, res.settings);
-              settings.dockPosition = latestPrefs.dockPosition || 'bottom';
-              document.body.classList.toggle('dark', settings.dark);
-              ui.applyPrefs(latestPrefs);
-              requestRender();
-            } catch {
-              /* recovery failed, start fresh */
-            }
-          },
-          () => {
-            ui.newBoard();
-          },
-        );
+      const startupFile = await invoke<string | null>('get_startup_file');
+      if (startupFile) {
+        if (startupFile.toLowerCase().endsWith('.rboard')) {
+          const res = await loadBoard(startupFile, scene, assets);
+          Object.assign(camera, res.camera);
+          Object.assign(settings, res.settings);
+          settings.dockPosition = diskPrefs.dockPosition || 'bottom';
+          document.body.classList.toggle('dark', settings.dark);
+          ui.applyPrefs(diskPrefs);
+          requestRender();
+        } else if (startupFile.toLowerCase().endsWith('.pdf')) {
+          const bytes = await invoke<number[]>('read_file', { path: startupFile });
+          const name = startupFile.split(/[\\/]/).pop() || 'startup.pdf';
+          await input.insertPdfBytes(new Uint8Array(bytes), name);
+        }
+      } else {
+        // Check for recovery file
+        const rec = await checkCrashRecovery();
+        if (rec) {
+          ui.showStartupDialog(
+            async () => {
+              try {
+                const res = await loadBoard(rec, scene, assets);
+                const latestPrefs = getTaskbarPrefsSync();
+                Object.assign(camera, res.camera);
+                Object.assign(settings, res.settings);
+                settings.dockPosition = latestPrefs.dockPosition || 'bottom';
+                document.body.classList.toggle('dark', settings.dark);
+                ui.applyPrefs(latestPrefs);
+                requestRender();
+              } catch {
+                /* recovery failed, start fresh */
+              }
+            },
+            () => {
+              ui.newBoard();
+            },
+          );
+        }
       }
     }
   } catch (err) {
