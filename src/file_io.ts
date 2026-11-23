@@ -24,6 +24,7 @@ export function defaultTaskbarPrefs(): TaskbarPrefs {
     dark: false,
     pattern: 'dots',
     smoothing: 'balanced',
+    haptics: true,
   };
 }
 
@@ -56,6 +57,7 @@ function normalizePrefs(raw: Partial<TaskbarPrefs> | null | undefined): TaskbarP
     dark: typeof raw.dark === 'boolean' ? raw.dark : def.dark,
     pattern: raw.pattern ?? def.pattern,
     smoothing: raw.smoothing ?? def.smoothing,
+    haptics: typeof raw.haptics === 'boolean' ? raw.haptics : def.haptics,
   };
 }
 
@@ -232,6 +234,7 @@ export async function loadBoard(
       dark: boardData.settings?.dark ?? savedPrefs.dark ?? false,
       smoothing: boardData.settings?.smoothing ?? savedPrefs.smoothing ?? 'balanced',
       dockPosition: savedPrefs.dockPosition,
+      haptics: savedPrefs.haptics ?? true,
     },
   };
 }

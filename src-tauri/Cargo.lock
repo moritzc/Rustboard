@@ -3194,7 +3194,7 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rustboard"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "arboard",
  "image",
@@ -3207,6 +3207,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "ureq",
+ "windows",
 ]
 
 [[package]]

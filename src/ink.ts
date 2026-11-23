@@ -17,25 +17,25 @@ interface SmoothingConfig {
 
 const SMOOTHING_PROFILES: Record<InkingSmoothing, SmoothingConfig> = {
   raw: {
-    // Direct / Low Latency (direct tracking, minimum latency)
-    pen: { smoothing: 0.3, streamline: 0.05, thinning: 0.55 },
-    mouse: { smoothing: 0.4, streamline: 0.14, thinning: 0.35 },
-    hlPen: { smoothing: 0.25, streamline: 0.04 },
-    hlMouse: { smoothing: 0.45, streamline: 0.15 },
+    // Precision / Direct (Zero string-pull lag, crisp fine lettering at any zoom)
+    pen: { smoothing: 0.2, streamline: 0.0, thinning: 0.2 },
+    mouse: { smoothing: 0.35, streamline: 0.1, thinning: 0.25 },
+    hlPen: { smoothing: 0.2, streamline: 0.02 },
+    hlMouse: { smoothing: 0.4, streamline: 0.12 },
   },
   balanced: {
-    // Balanced (Natural handwriting & drawing, smooth curves, no perceptible lag)
-    pen: { smoothing: 0.48, streamline: 0.16, thinning: 0.55 },
-    mouse: { smoothing: 0.58, streamline: 0.28, thinning: 0.35 },
-    hlPen: { smoothing: 0.38, streamline: 0.12 },
-    hlMouse: { smoothing: 0.6, streamline: 0.3 },
+    // Natural Handwriting (Clean letter loops, minimal lag, controlled pressure variation)
+    pen: { smoothing: 0.35, streamline: 0.08, thinning: 0.3 },
+    mouse: { smoothing: 0.5, streamline: 0.22, thinning: 0.3 },
+    hlPen: { smoothing: 0.32, streamline: 0.08 },
+    hlMouse: { smoothing: 0.55, streamline: 0.24 },
   },
   smooth: {
-    // High / Stabilized (Clean lettering, calm lines, jitter reduction)
-    pen: { smoothing: 0.62, streamline: 0.36, thinning: 0.55 },
-    mouse: { smoothing: 0.72, streamline: 0.48, thinning: 0.35 },
-    hlPen: { smoothing: 0.52, streamline: 0.24 },
-    hlMouse: { smoothing: 0.72, streamline: 0.45 },
+    // Stabilized / Calligraphy (Smooth curves, jitter stabilization, expressive line weight)
+    pen: { smoothing: 0.56, streamline: 0.28, thinning: 0.45 },
+    mouse: { smoothing: 0.68, streamline: 0.42, thinning: 0.35 },
+    hlPen: { smoothing: 0.48, streamline: 0.2 },
+    hlMouse: { smoothing: 0.68, streamline: 0.4 },
   },
 };
 
@@ -50,7 +50,7 @@ export function strokeOutline(pts: number[], st: InkStyle, last = true): number[
   // Single point tap: generate a round dot
   if (input.length === 1) {
     const [x, y, p] = input[0];
-    const r = Math.max(1, (st.size * (st.highlighter ? 1 : p || 0.5)) / 2);
+    const r = Math.max(0.5, (st.size * (st.highlighter ? 1 : 0.35 + (p || 0.5) * 0.65)) / 2);
     const dot: number[][] = [];
     const n = 12;
     for (let i = 0; i < n; i++) {
@@ -60,6 +60,17 @@ export function strokeOutline(pts: number[], st: InkStyle, last = true): number[
     return dot;
   }
 
+  // Compute average point step so fine handwriting at high zoom (500%+)
+  // isn't collapsed by perfect-freehand's size-proportional smoothing window.
+  let totalDist = 0;
+  const sampleCount = Math.min(input.length - 1, 32);
+  for (let i = 0; i < sampleCount; i++) {
+    totalDist += Math.hypot(input[i + 1][0] - input[i][0], input[i + 1][1] - input[i][1]);
+  }
+  const avgStep = sampleCount > 0 ? totalDist / sampleCount : st.size;
+  // When writing fine letters relative to stroke size (e.g. high zoom), scale down smoothing & streamline
+  const detailRatio = Math.min(1, Math.max(0.32, (avgStep * 2.2) / Math.max(0.5, st.size)));
+
   const mode: InkingSmoothing = st.smoothingMode || 'balanced';
   const profile = SMOOTHING_PROFILES[mode] || SMOOTHING_PROFILES.balanced;
 
@@ -68,8 +79,8 @@ export function strokeOutline(pts: number[], st: InkStyle, last = true): number[
     return getStroke(input, {
       size: st.size,
       thinning: 0,
-      smoothing: hlCfg.smoothing,
-      streamline: hlCfg.streamline,
+      smoothing: hlCfg.smoothing * detailRatio,
+      streamline: hlCfg.streamline * detailRatio,
       simulatePressure: false,
       last,
     });
@@ -79,10 +90,10 @@ export function strokeOutline(pts: number[], st: InkStyle, last = true): number[
   return getStroke(input, {
     size: st.size,
     thinning: penCfg.thinning,
-    smoothing: penCfg.smoothing,
-    streamline: penCfg.streamline,
+    smoothing: penCfg.smoothing * detailRatio,
+    streamline: penCfg.streamline * detailRatio,
     simulatePressure: !!st.sim,
-    easing: (t) => Math.sin((t * Math.PI) / 2),
+    easing: (t) => t * (2 - t),
     last,
     start: { cap: true, taper: 0 },
     end: { cap: true, taper: 0 },
@@ -120,17 +131,18 @@ interface CacheEntry {
   ptsLen: number;
   size: number;
   smoothingMode: InkingSmoothing;
+  last: boolean;
   outline: number[][];
   path: Path2D;
 }
 
 const cache = new WeakMap<StrokeObj, CacheEntry>();
 
-export function strokeGeometry(s: StrokeObj, smoothingMode: InkingSmoothing = 'balanced') {
+export function strokeGeometry(s: StrokeObj, smoothingMode: InkingSmoothing = 'balanced', last = true) {
   let g = cache.get(s);
-  if (!g || g.ptsLen !== s.pts.length || g.size !== s.size || g.smoothingMode !== smoothingMode) {
-    const outline = strokeOutline(s.pts, { ...s, smoothingMode });
-    g = { ptsLen: s.pts.length, size: s.size, smoothingMode, outline, path: outlinePath(outline) };
+  if (!g || g.ptsLen !== s.pts.length || g.size !== s.size || g.smoothingMode !== smoothingMode || g.last !== last) {
+    const outline = strokeOutline(s.pts, { ...s, smoothingMode }, last);
+    g = { ptsLen: s.pts.length, size: s.size, smoothingMode, last, outline, path: outlinePath(outline) };
     cache.set(s, g);
   }
   return g;
@@ -146,6 +158,7 @@ export function translateStrokeCache(oldStroke: StrokeObj, newStroke: StrokeObj,
     ptsLen: newStroke.pts.length,
     size: newStroke.size,
     smoothingMode: g.smoothingMode,
+    last: g.last,
     outline,
     path,
   });
@@ -168,6 +181,7 @@ export function rotateStrokeCache(oldStroke: StrokeObj, newStroke: StrokeObj, cx
     ptsLen: newStroke.pts.length,
     size: newStroke.size,
     smoothingMode: g.smoothingMode,
+    last: g.last,
     outline,
     path,
   });

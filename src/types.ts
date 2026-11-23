@@ -117,6 +117,7 @@ export interface TaskbarPrefs {
   dark?: boolean;
   pattern?: Pattern;
   smoothing?: InkingSmoothing;
+  haptics?: boolean;
 }
 
 export interface BoardSettings {
@@ -124,6 +125,7 @@ export interface BoardSettings {
   dark: boolean;
   smoothing?: InkingSmoothing;
   dockPosition?: DockPosition;
+  haptics?: boolean;
 }
 
 export interface Camera {

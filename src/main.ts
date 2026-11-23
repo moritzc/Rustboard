@@ -21,6 +21,7 @@ async function bootstrap() {
     dark: !!initPrefs.dark,
     smoothing: initPrefs.smoothing || 'balanced',
     dockPosition: initPrefs.dockPosition || 'bottom',
+    haptics: initPrefs.haptics !== false,
   };
   document.body.classList.toggle('dark', settings.dark);
 
@@ -63,6 +64,7 @@ async function bootstrap() {
     minimap,
     requestRender,
     onSelectionChanged,
+    settings,
   );
   (input as any).renderer = renderer;
 
@@ -141,6 +143,7 @@ async function bootstrap() {
     settings.dark = !!diskPrefs.dark;
     settings.pattern = diskPrefs.pattern || 'dots';
     settings.smoothing = diskPrefs.smoothing || 'balanced';
+    settings.haptics = diskPrefs.haptics !== false;
     document.body.classList.toggle('dark', settings.dark);
     ui.applyPrefs(diskPrefs);
     requestRender();

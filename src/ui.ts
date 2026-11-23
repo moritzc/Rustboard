@@ -233,6 +233,9 @@ export class UIManager {
     if (prefs.shapeSize > 0) {
       this.input.shapeConfig.size = prefs.shapeSize;
     }
+    if (typeof prefs.haptics === 'boolean') {
+      this.settings.haptics = prefs.haptics;
+    }
   }
 
   collectAndSavePrefs() {
@@ -259,6 +262,7 @@ export class UIManager {
       dark: this.settings.dark,
       pattern: this.settings.pattern,
       smoothing: this.settings.smoothing || 'balanced',
+      haptics: this.settings.haptics !== false,
     };
     void saveTaskbarPrefs(prefs);
   }
@@ -819,19 +823,26 @@ export class UIManager {
         </div>
 
         <div class="option-group">
-          <div class="option-label">Inking Smoothing & Stabilization</div>
+          <div class="option-label">Stylus Feel & Stabilization (Zoom-Adaptive)</div>
           <div class="pill-row">
-            <div class="pill ${(!this.settings.smoothing || this.settings.smoothing === 'balanced') ? 'selected' : ''}" data-smooth="balanced">Balanced</div>
-            <div class="pill ${this.settings.smoothing === 'raw' ? 'selected' : ''}" data-smooth="raw">Low / Direct</div>
-            <div class="pill ${this.settings.smoothing === 'smooth' ? 'selected' : ''}" data-smooth="smooth">High / Stabilized</div>
+            <div class="pill ${this.settings.smoothing === 'raw' ? 'selected' : ''}" data-smooth="raw">Precision</div>
+            <div class="pill ${(!this.settings.smoothing || this.settings.smoothing === 'balanced') ? 'selected' : ''}" data-smooth="balanced">Natural</div>
+            <div class="pill ${this.settings.smoothing === 'smooth' ? 'selected' : ''}" data-smooth="smooth">Stabilized</div>
           </div>
           <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
-            Balanced gives natural handwriting. Low reduces input latency. High stabilizes jitter for neat lettering.
+            Precision tracks your pen tip 1:1 with zero string-pull. Natural balances clean handwriting and fine loops at any zoom. Stabilized smooths curves for calligraphy.
           </div>
         </div>
 
         <div class="option-group">
           <div class="option-label">Behaviors & Overlays</div>
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; margin-bottom: 10px;">
+            <input type="checkbox" id="chk-haptics" ${this.settings.haptics !== false ? 'checked' : ''}/>
+            Surface Stylus Haptic Feedback
+          </label>
+          <div style="font-size: 11px; color: var(--text-muted); margin-top: -6px; margin-bottom: 12px;">
+            Enables tactile ink/eraser textures and snap clicks on compatible Windows 11 pens (e.g. Surface Slim Pen 2).
+          </div>
           <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer;">
             <input type="checkbox" id="chk-minimap" ${this.minimap.visible ? 'checked' : ''}/>
             Show Minimap
@@ -902,6 +913,12 @@ export class UIManager {
       scheduleAutosave(this.scene, this.assets, this.camera, this.settings);
       this.onNeedRender();
       close();
+    });
+
+    modal.querySelector('#chk-haptics')?.addEventListener('change', (e: any) => {
+      this.settings.haptics = !!e.target.checked;
+      this.collectAndSavePrefs();
+      scheduleAutosave(this.scene, this.assets, this.camera, this.settings);
     });
 
     modal.querySelector('#chk-minimap')?.addEventListener('change', (e: any) => {

@@ -308,6 +308,82 @@ async fn fetch_url(url: String) -> Result<Response, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Trigger Surface Slim Pen 2 / Windows 11 PenDevice haptic feedback.
+/// `kind`: "pen", "highlighter", "eraser", "click", "stop"
+#[tauri::command]
+fn pen_haptic(pointer_id: u32, kind: String) {
+    #[cfg(windows)]
+    {
+        use windows::Devices::Haptics::KnownSimpleHapticsControllerWaveforms;
+        use windows::Devices::Input::PenDevice;
+
+        let Ok(pen) = PenDevice::GetFromPointerId(pointer_id) else {
+            return;
+        };
+        let Ok(controller) = pen.SimpleHapticsController() else {
+            return;
+        };
+
+        if kind == "stop" {
+            let _ = controller.StopFeedback();
+            return;
+        }
+
+        let target_waveform = match kind.as_str() {
+            "pen" => KnownSimpleHapticsControllerWaveforms::InkContinuous().ok(),
+            "highlighter" => KnownSimpleHapticsControllerWaveforms::BrushContinuous().ok(),
+            "eraser" => KnownSimpleHapticsControllerWaveforms::EraserContinuous().ok(),
+            "click" => KnownSimpleHapticsControllerWaveforms::Click().ok(),
+            _ => None,
+        };
+
+        let Some(target) = target_waveform else {
+            return;
+        };
+        let Ok(supported) = controller.SupportedFeedback() else {
+            return;
+        };
+
+        // Find matching waveform or fallback to InkContinuous / Click
+        let mut matched = None;
+        for fb in &supported {
+            if let Ok(w) = fb.Waveform() {
+                if w == target {
+                    matched = Some(fb);
+                    break;
+                }
+            }
+        }
+        if matched.is_none() && (kind == "highlighter" || kind == "eraser") {
+            if let Ok(ink_w) = KnownSimpleHapticsControllerWaveforms::InkContinuous() {
+                for fb in &supported {
+                    if let Ok(w) = fb.Waveform() {
+                        if w == ink_w {
+                            matched = Some(fb);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(fb) = matched {
+            let intensity = match kind.as_str() {
+                "pen" => 0.75,
+                "highlighter" => 0.65,
+                "eraser" => 0.85,
+                _ => 1.0,
+            };
+            if controller
+                .SendHapticFeedbackWithIntensity(&fb, intensity)
+                .is_err()
+            {
+                let _ = controller.SendHapticFeedback(&fb);
+            }
+        }
+    }
+}
+
 fn main() {
     if std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_err() {
         std::env::set_var(
@@ -334,7 +410,8 @@ fn main() {
             clipboard_read_image,
             clipboard_read_files,
             clipboard_write_image,
-            fetch_url
+            fetch_url,
+            pen_haptic
         ])
         .run(tauri::generate_context!())
         .expect("error while running Rustboard");

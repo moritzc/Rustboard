@@ -300,11 +300,15 @@ export class Renderer {
     if (activeDraft) {
       if (activeDraft.type === 'frame') {
         this.renderFrame(ctx, activeDraft, camera.zoom, settings.dark, true);
-      } else if (activeDraft.type === 'stroke' && activeDraft.highlighter) {
-        ctx.save();
-        ctx.globalAlpha = 0.45;
-        this.renderStroke(ctx, activeDraft, smoothingMode);
-        ctx.restore();
+      } else if (activeDraft.type === 'stroke') {
+        if (activeDraft.highlighter) {
+          ctx.save();
+          ctx.globalAlpha = 0.45;
+          this.renderStroke(ctx, activeDraft, smoothingMode, false);
+          ctx.restore();
+        } else {
+          this.renderStroke(ctx, activeDraft, smoothingMode, false);
+        }
       } else {
         this.renderObject(ctx, activeDraft, assets, camera.zoom, smoothingMode);
       }
@@ -364,7 +368,8 @@ export class Renderer {
     // 3. Screen overlays (Ruler, Radial menu, Minimap)
     ruler.render(ctx);
     radial.render(ctx);
-    minimap.render(ctx, camera, objects, cssW, cssH, settings.dark, assets, sVer, settings.dockPosition || 'bottom', isErasingActive);
+    const deferMinimapCache = isErasingActive || activeDraft !== null || hasActiveTransform;
+    minimap.render(ctx, camera, objects, cssW, cssH, settings.dark, assets, sVer, settings.dockPosition || 'bottom', deferMinimapCache);
   }
 
   private renderLayerObjects(
@@ -590,8 +595,8 @@ export class Renderer {
     }
   }
 
-  private renderStroke(ctx: CanvasRenderingContext2D, s: StrokeObj, smoothingMode?: InkingSmoothing) {
-    const g = strokeGeometry(s, smoothingMode);
+  private renderStroke(ctx: CanvasRenderingContext2D, s: StrokeObj, smoothingMode?: InkingSmoothing, last = true) {
+    const g = strokeGeometry(s, smoothingMode, last);
     ctx.fillStyle = s.color;
     ctx.fill(g.path);
   }
@@ -788,25 +793,25 @@ export class Renderer {
       for (const [h, hx, hy] of handlePositions(b, zoom, sf.canRotate)) {
         ctx.beginPath();
         if (h === 'rot') {
-          ctx.arc(hx, hy, 7.5 / zoom, 0, Math.PI * 2);
+          ctx.arc(hx, hy, 9 / zoom, 0, Math.PI * 2);
           ctx.fillStyle = accent;
           ctx.fill();
           // circular arrow glyph
           ctx.strokeStyle = '#ffffff';
-          ctx.lineWidth = 1.6 / zoom;
+          ctx.lineWidth = 1.7 / zoom;
           ctx.beginPath();
-          ctx.arc(hx, hy, 3.8 / zoom, -Math.PI * 0.9, Math.PI * 0.5);
+          ctx.arc(hx, hy, 4.4 / zoom, -Math.PI * 0.9, Math.PI * 0.5);
           ctx.stroke();
         } else {
-          const s = (h.length === 2 ? 11 : 9) / zoom;
+          const s = (h.length === 2 ? 13 : 11) / zoom;
           ctx.save();
           ctx.translate(hx, hy);
           ctx.rotate(b.rot);
           ctx.fillStyle = '#ffffff';
           ctx.strokeStyle = accent;
-          ctx.lineWidth = 1.8 / zoom;
+          ctx.lineWidth = 2 / zoom;
           ctx.beginPath();
-          ctx.roundRect(-s / 2, -s / 2, s, s, 2.5 / zoom);
+          ctx.roundRect(-s / 2, -s / 2, s, s, 3 / zoom);
           ctx.fill();
           ctx.stroke();
           ctx.restore();

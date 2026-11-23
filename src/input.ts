@@ -14,9 +14,11 @@ import type { RadialMenu } from './radial_menu';
 import type { Ruler } from './ruler';
 import type { Scene } from './scene';
 import type {
-  Box, Camera, FrameObj, ImageObj, LineDash, Obj, PdfPageObj, SelectMode, ShapeKind, ShapeObj, ShapeTool, StrokeObj, TextObj, Tool,
+  BoardSettings, Box, Camera, FrameObj, ImageObj, LineDash, Obj, PdfPageObj, SelectMode, ShapeKind, ShapeObj, ShapeTool, StrokeObj, TextObj, Tool,
 } from './types';
 import { PT, uid } from './types';
+
+const PDF_DEFAULT_SCALE = 1.5;
 
 export interface PenConfig {
   color: string;
@@ -90,6 +92,8 @@ export class InputManager {
   private isPanning = false;
   private isDraggingMinimap = false;
   private panStart = { x: 0, y: 0 };
+  private activeHapticPointerId: number | null = null;
+  private rulerWasSnapped = false;
 
   // Stroke points [x, y, pressure...]
   private rawStrokePts: number[] = [];
@@ -113,8 +117,19 @@ export class InputManager {
     private minimap: Minimap,
     private onNeedRender: () => void,
     private onSelectionChanged: (ids: Set<string>) => void,
+    private settings?: BoardSettings,
   ) {
     this.bindEvents();
+  }
+
+  private triggerPenHaptic(pointerId: number, kind: 'pen' | 'highlighter' | 'eraser' | 'click' | 'stop') {
+    if (this.settings && this.settings.haptics === false) return;
+    if (kind === 'pen' || kind === 'highlighter' || kind === 'eraser') {
+      this.activeHapticPointerId = pointerId;
+    } else if (kind === 'stop') {
+      this.activeHapticPointerId = null;
+    }
+    invoke('pen_haptic', { pointerId, kind }).catch(() => {});
   }
 
   private screenToWorld(sx: number, sy: number): [number, number] {
@@ -245,6 +260,9 @@ export class InputManager {
 
     // Stylus Barrel Button or Right Click -> Quick Select (draw to select)
     if (e.button === 2 || (e.buttons & 2)) {
+      if (e.pointerType === 'pen') {
+        this.triggerPenHaptic(e.pointerId, 'click');
+      }
       const [wx, wy] = this.screenToWorld(e.clientX, e.clientY);
       this.clearSelection();
       this.currentTool = 'select';
@@ -351,6 +369,9 @@ export class InputManager {
     const snap = this.ruler.snapScreenPoint(e.clientX, e.clientY);
     if (snap) {
       [wx, wy] = this.screenToWorld(snap.x, snap.y);
+      this.rulerWasSnapped = true;
+    } else {
+      this.rulerWasSnapped = false;
     }
 
     this.dragStartWorld = { x: wx, y: wy };
@@ -360,6 +381,10 @@ export class InputManager {
       const cfg = isHl ? this.highlighterConfig : this.penConfig;
       const pressure = e.pressure > 0 ? e.pressure : 0.5;
       const sim = e.pointerType === 'mouse';
+
+      if (e.pointerType === 'pen') {
+        this.triggerPenHaptic(e.pointerId, isHl ? 'highlighter' : 'pen');
+      }
 
       this.rawStrokePts = [wx, wy, pressure];
       this.activeDraft = {
@@ -376,9 +401,12 @@ export class InputManager {
       this.activeDraft = null;
       this.onNeedRender();
     } else if (effectiveTool === 'eraser') {
+      if (e.pointerType === 'pen') {
+        this.triggerPenHaptic(e.pointerId, 'eraser');
+      }
       this.startErasing(wx, wy);
     } else if (effectiveTool === 'select') {
-      this.handleSelectDown(wx, wy, e.clientX, e.clientY);
+      this.handleSelectDown(wx, wy, e.clientX, e.clientY, e);
     } else if (effectiveTool === 'text') {
       const tol = 12 / this.camera.zoom;
       let hitText: TextObj | null = null;
@@ -578,6 +606,12 @@ export class InputManager {
     const snap = this.ruler.snapScreenPoint(e.clientX, e.clientY);
     if (snap) {
       [wx, wy] = this.screenToWorld(snap.x, snap.y);
+      if (!this.rulerWasSnapped && e.pointerType === 'pen') {
+        this.triggerPenHaptic(e.pointerId, 'click');
+      }
+      this.rulerWasSnapped = true;
+    } else {
+      this.rulerWasSnapped = false;
     }
 
     const isEraserTip = e.button === 5 || (e.buttons & 32) !== 0;
@@ -588,6 +622,10 @@ export class InputManager {
         const coalesced = (e.pointerType !== 'mouse' && e.getCoalescedEvents && e.getCoalescedEvents().length > 0)
           ? e.getCoalescedEvents()
           : [e];
+
+        // Zoom-aware sampling threshold: keeps point density uniform at 500%+ zoom
+        // while preserving sub-pixel precision for fine strokes
+        const minWorldDist = Math.max(0.45, Math.min(1.1, 0.75 / Math.sqrt(Math.max(0.25, this.camera.zoom))));
 
         for (const ce of coalesced) {
           let [cwx, cwy] = this.screenToWorld(ce.clientX, ce.clientY);
@@ -600,13 +638,26 @@ export class InputManager {
           if (len >= 3) {
             const lx = this.rawStrokePts[len - 3];
             const ly = this.rawStrokePts[len - 2];
-            const screenDist = Math.hypot((cwx - lx) * this.camera.zoom, (cwy - ly) * this.camera.zoom);
-            if (screenDist < 1.2) continue;
+            const worldDist = Math.hypot(cwx - lx, cwy - ly);
+            if (worldDist < minWorldDist) continue;
           }
           this.rawStrokePts.push(cwx, cwy, cp);
         }
 
-        this.activeDraft.pts = this.rawStrokePts.slice();
+        const draftPts = this.rawStrokePts.slice();
+        // Append up to 2 OS-predicted points for zero-latency live stylus tip preview (never committed to final stroke)
+        if (!snap && e.pointerType === 'pen' && e.getPredictedEvents) {
+          const predicted = e.getPredictedEvents();
+          const maxPred = Math.min(2, predicted.length);
+          for (let i = 0; i < maxPred; i++) {
+            const pe = predicted[i];
+            const [pwx, pwy] = this.screenToWorld(pe.clientX, pe.clientY);
+            const pp = pe.pressure > 0 ? pe.pressure : 0.5;
+            draftPts.push(pwx, pwy, pp);
+          }
+        }
+
+        this.activeDraft.pts = draftPts;
         this.onNeedRender();
       }
     } else if (effectiveTool === 'laser' || effectiveTool === 'fading') {
@@ -634,7 +685,13 @@ export class InputManager {
   }
 
   private onPointerUp(e: PointerEvent) {
-    if (e.pointerType === 'pen') this.penDown = false;
+    if (e.pointerType === 'pen') {
+      this.penDown = false;
+      if (this.activeHapticPointerId !== null) {
+        this.triggerPenHaptic(e.pointerId, 'stop');
+      }
+    }
+    this.rulerWasSnapped = false;
     this.activePointers.delete(e.pointerId);
 
     // End ruler drag modes
@@ -675,15 +732,22 @@ export class InputManager {
           this.activeDraft.y = this.dragStartWorld.y - 300;
         }
       }
+      const prevVer = this.scene.version;
+      let committedObj: Obj;
       if (this.activeDraft.type === 'stroke') {
         const finalStroke: StrokeObj = {
           ...this.activeDraft,
           pts: this.rawStrokePts.slice(),
         };
+        committedObj = finalStroke;
         this.scene.add([finalStroke]);
       } else {
+        committedObj = this.activeDraft;
         this.scene.add([this.activeDraft]);
       }
+      // Incrementally patch only the newly added object's bounding box in the scene cache
+      // to completely eliminate the full-board redraw lagspike on pen release!
+      (this as any).renderer?.markSceneDirtyRect(bboxOf(committedObj), prevVer, this.scene.version);
       this.activeDraft = null;
       this.rawStrokePts = [];
       this.onNeedRender();
@@ -904,13 +968,13 @@ export class InputManager {
     }
     const currentBox = this.activeSelectionBox ?? sf.box;
     const [wx, wy] = this.screenToWorld(sx, sy);
-    const tol = 12 / this.camera.zoom;
+    const handleTol = 18 / this.camera.zoom;
     const handles = handlePositions(currentBox, this.camera.zoom, sf.canRotate);
 
     // Check rotate handle first with generous hit radius
     if (sf.canRotate) {
       const rotEntry = handles.find(([h]) => h === 'rot');
-      if (rotEntry && dist(wx, wy, rotEntry[1], rotEntry[2]) <= Math.max(tol * 1.5, 18 / this.camera.zoom)) {
+      if (rotEntry && dist(wx, wy, rotEntry[1], rotEntry[2]) <= 22 / this.camera.zoom) {
         this.canvas.style.cursor = 'grab';
         return;
       }
@@ -918,7 +982,7 @@ export class InputManager {
 
     for (const [h, hx, hy] of handles) {
       if (h === 'rot') continue;
-      if (dist(wx, wy, hx, hy) <= tol) {
+      if (dist(wx, wy, hx, hy) <= handleTol) {
         if (h === 'nw' || h === 'se') {
           this.canvas.style.cursor = 'nwse-resize';
           return;
@@ -937,14 +1001,54 @@ export class InputManager {
         }
       }
     }
+
+    const pad = 6 / this.camera.zoom;
+    const paddedBox: Box = {
+      x: currentBox.x - pad,
+      y: currentBox.y - pad,
+      w: currentBox.w + pad * 2,
+      h: currentBox.h + pad * 2,
+      rot: currentBox.rot,
+    };
+    if (insideBox(paddedBox, wx, wy)) {
+      this.canvas.style.cursor = 'move';
+      return;
+    }
+
     this.canvas.style.cursor = '';
   }
 
-  private handleSelectDown(wx: number, wy: number, sx: number, sy: number) {
-    const tol = 12 / this.camera.zoom;
+  private startSelectionMove(wx: number, wy: number) {
+    this.dragMode = 'move';
+    this.canvas.style.cursor = 'move';
+    this.dragStartWorld = { x: wx, y: wy };
+    this.transformInitialObjs = this.scene.objects.map((o) => ({ ...o }));
+
+    // If any selected object is a frame, collect all objects inside it so they move together
+    this.frameContainedIds.clear();
+    for (const id of this.selectedIds) {
+      const o = this.scene.get(id);
+      if (o && o.type === 'frame') {
+        const fBox = boxOf(o as any);
+        for (const other of this.scene.objects) {
+          if (!this.selectedIds.has(other.id) && insideFrame(other, fBox)) {
+            this.frameContainedIds.add(other.id);
+          }
+        }
+      }
+    }
+    this.activeTransformIds = new Set([...this.selectedIds, ...this.frameContainedIds]);
+    this.transformSessionId++;
+    this.onNeedRender();
+  }
+
+  private handleSelectDown(wx: number, wy: number, sx: number, sy: number, e?: PointerEvent) {
+    const tol = 14 / this.camera.zoom;
+    const handleTol = (e?.pointerType === 'mouse' ? 16 : 20) / this.camera.zoom;
+    const rotTol = (e?.pointerType === 'mouse' ? 20 : 24) / this.camera.zoom;
     const hadSelection = this.selectedIds.size > 0;
 
-    // 1. Check hit on existing selection handles
+    // 1. Check hit on existing selection handles OR inside the active selection bounding box
     if (hadSelection) {
       const sf = selectionFrame(this.scene.objects, this.selectedIds);
       const currentBox = this.activeSelectionBox ?? sf?.box;
@@ -954,7 +1058,8 @@ export class InputManager {
         // Check rotate handle FIRST with dedicated priority radius so resize handles never shadow it
         if (sf.canRotate) {
           const rotEntry = handles.find(([h]) => h === 'rot');
-          if (rotEntry && dist(wx, wy, rotEntry[1], rotEntry[2]) <= Math.max(tol * 1.5, 18 / this.camera.zoom)) {
+          if (rotEntry && dist(wx, wy, rotEntry[1], rotEntry[2]) <= rotTol) {
+            if (e?.pointerType === 'pen') this.triggerPenHaptic(e.pointerId, 'click');
             this.activeHandle = 'rot';
             this.dragMode = 'rotate';
             this.activeTransformIds = new Set(this.selectedIds);
@@ -975,7 +1080,8 @@ export class InputManager {
         // Check resize handles
         for (const [h, hx, hy] of handles) {
           if (h === 'rot') continue;
-          if (dist(wx, wy, hx, hy) <= tol) {
+          if (dist(wx, wy, hx, hy) <= handleTol) {
+            if (e?.pointerType === 'pen') this.triggerPenHaptic(e.pointerId, 'click');
             this.activeHandle = h;
             this.dragMode = 'resize';
             this.activeTransformIds = new Set(this.selectedIds);
@@ -992,6 +1098,21 @@ export class InputManager {
             return;
           }
         }
+
+        // Clicking anywhere inside the selection bounding box (including the center crosshair or whitespace between lassoed words) drags the selection!
+        const pad = 6 / this.camera.zoom;
+        const paddedBox: Box = {
+          x: currentBox.x - pad,
+          y: currentBox.y - pad,
+          w: currentBox.w + pad * 2,
+          h: currentBox.h + pad * 2,
+          rot: currentBox.rot,
+        };
+        if (insideBox(paddedBox, wx, wy)) {
+          if (e?.pointerType === 'pen') this.triggerPenHaptic(e.pointerId, 'click');
+          this.startSelectionMove(wx, wy);
+          return;
+        }
       }
     }
 
@@ -1006,32 +1127,14 @@ export class InputManager {
     }
 
     if (hit) {
+      if (e?.pointerType === 'pen') this.triggerPenHaptic(e.pointerId, 'click');
       if (!this.selectedIds.has(hit.id)) {
         this.selectedIds.clear();
         this.activeSelectionBox = null;
         this.selectedIds.add(hit.id);
         this.onSelectionChanged(this.selectedIds);
       }
-      this.dragMode = 'move';
-      this.dragStartWorld = { x: wx, y: wy };
-      this.transformInitialObjs = this.scene.objects.map((o) => ({ ...o }));
-
-      // If any selected object is a frame, collect all objects inside it so they move together
-      this.frameContainedIds.clear();
-      for (const id of this.selectedIds) {
-        const o = this.scene.get(id);
-        if (o && o.type === 'frame') {
-          const fBox = boxOf(o as any);
-          for (const other of this.scene.objects) {
-            if (!this.selectedIds.has(other.id) && insideFrame(other, fBox)) {
-              this.frameContainedIds.add(other.id);
-            }
-          }
-        }
-      }
-      this.activeTransformIds = new Set([...this.selectedIds, ...this.frameContainedIds]);
-      this.transformSessionId++;
-      this.onNeedRender();
+      this.startSelectionMove(wx, wy);
       return;
     }
 
@@ -1044,7 +1147,11 @@ export class InputManager {
       this.currentTool = 'pen';
       this.onToolChanged?.('pen');
 
-      const pressure = 0.5;
+      const pressure = e && e.pressure > 0 ? e.pressure : 0.5;
+      const sim = !e || e.pointerType === 'mouse';
+      if (e?.pointerType === 'pen') {
+        this.triggerPenHaptic(e.pointerId, 'pen');
+      }
       this.rawStrokePts = [wx, wy, pressure];
       this.activeDraft = {
         id: uid(),
@@ -1053,7 +1160,7 @@ export class InputManager {
         color: this.penConfig.color,
         size: this.penConfig.size,
         highlighter: false,
-        sim: true,
+        sim,
       };
       this.onNeedRender();
     } else {
@@ -1525,11 +1632,11 @@ export class InputManager {
     let curY = topY;
     const objs: PdfPageObj[] = [];
 
-    // Place selected pages vertically with neat margin
+    // Place selected pages vertically with neat margin (scaled to 150% default canvas width for comfortable handwriting at 100% zoom)
     for (const pageIdx of chosenPages) {
       const size = await info.sizes(pageIdx);
-      const w = size.w * PT;
-      const h = size.h * PT;
+      const w = size.w * PT * PDF_DEFAULT_SCALE;
+      const h = size.h * PT * PDF_DEFAULT_SCALE;
 
       objs.push({
         id: uid(),

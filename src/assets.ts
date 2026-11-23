@@ -22,7 +22,7 @@ interface PageEntry {
 }
 
 const PAGE_PIXEL_BUDGET = 90e6; // ~360 MB of page bitmaps
-const SCALE_BUCKETS = [0.75, 1.5, 2.5, 4, 6];
+const SCALE_BUCKETS = [1, 1.75, 3, 4.5, 6.5];
 
 export function bytesToBase64(bytes: Uint8Array): string {
   let s = '';
